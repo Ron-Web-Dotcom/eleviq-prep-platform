@@ -90,8 +90,8 @@ function Home() {
     <main className="min-h-dvh overflow-hidden bg-background">
       <nav className="relative z-20 mx-auto flex w-full max-w-7xl items-center justify-between border-b border-primary/10 px-5 py-4 lg:border-0 lg:px-10 lg:py-6">
         <Link to="/" className="group flex shrink-0 items-center" aria-label="ELEVIQ Prep home">
-          <span className="flex h-12 w-40 items-center justify-center overflow-hidden rounded-xl bg-card px-2 shadow-md ring-1 ring-primary/15 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-lg sm:h-14 sm:w-48">
-            <img src="/brand/eleviq-logo.png" alt="ELEVIQ Prep" className="h-full w-full scale-[1.45] object-cover object-center" />
+          <span className="flex h-10 w-32 items-center justify-center overflow-hidden rounded-xl bg-card px-1.5 shadow-md ring-1 ring-primary/15 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-lg sm:h-12 sm:w-40">
+            <img src="/brand/eleviq-logo.png" alt="ELEVIQ Prep" className="h-full w-full object-contain object-center" />
           </span>
         </Link>
         <div className="hidden items-center gap-1.5 rounded-full border border-primary/10 bg-card/85 p-1.5 shadow-md backdrop-blur md:flex">
