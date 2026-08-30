@@ -23,7 +23,7 @@ const pnHesiPackages = [
 const reviews = [
   { name: 'Monica R.', role: 'Phlebotomy student', quote: 'ELEVIQ gave me a study plan I could actually follow. The tutoring sessions made the hard topics feel manageable.', rating: 5 },
   { name: 'James T.', role: 'CNA student', quote: 'The practice questions showed me exactly where I needed to improve instead of making me guess what to study next.', rating: 5 },
-  { name: 'Aaliyah S.', role: 'LPN student', quote: 'I bought the workbook for my final stretch and loved how clear and focused every chapter felt.', rating: 5 },
+  { name: 'Aaliyah S.', role: 'Phlebotomy student', quote: 'I bought the workbook for my final stretch and loved how clear and focused every chapter felt.', rating: 5 },
 ]
 
 const workbooks = [
