@@ -29,8 +29,9 @@ async function authorizedFetch(path: string, init?: RequestInit) {
 
 export type ChatContact = { id: string; displayName?: string; email?: string }
 
-export async function fetchChatContacts(): Promise<ChatContact[]> {
-  const body = await authorizedFetch('/api/chat/contacts') as { contacts?: ChatContact[] }
+export async function fetchChatContacts(kind?: 'students'): Promise<ChatContact[]> {
+  const query = kind ? `?kind=${kind}` : ''
+  const body = await authorizedFetch(`/api/chat/contacts${query}`) as { contacts?: ChatContact[] }
   return Array.isArray(body.contacts) ? body.contacts : []
 }
 

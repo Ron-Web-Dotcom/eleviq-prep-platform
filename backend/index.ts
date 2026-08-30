@@ -193,7 +193,8 @@ app.post('/api/chat/messages', async (c) => {
     const messageType = body.messageType === 'voice' ? 'voice' : 'text'
     const text = clean(body.body, 4000)
     const audioUrl = clean(body.audioUrl, 1000)
-    const audioDurationSeconds = Math.min(3600, Math.max(0, Number(body.audioDurationSeconds || 0)))
+    const rawDuration = Number(body.audioDurationSeconds || 0)
+    const audioDurationSeconds = Number.isFinite(rawDuration) ? Math.min(3600, Math.max(0, rawDuration)) : 0
     if (!recipientUserId || recipientUserId === auth.userId) return c.json({ error: 'A valid recipient is required.' }, 400)
     if (messageType === 'text' && !text) return c.json({ error: 'Message text is required.' }, 400)
     if (messageType === 'voice' && (!audioUrl || !audioUrl.startsWith('https://'))) return c.json({ error: 'A secure voice note URL is required.' }, 400)
@@ -207,6 +208,12 @@ app.post('/api/chat/messages', async (c) => {
     const id = `chat_${crypto.randomUUID()}`
     await blink.db.sql(`INSERT INTO chat_messages (id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, auth.userId, recipientUserId, messageType, text || null, audioUrl || null, messageType === 'voice' ? audioDurationSeconds : null])
     const created = await blink.db.sql(`SELECT id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds, created_at, read_at FROM chat_messages WHERE id = ? LIMIT 1`, [id])
+    try {
+      const channelName = `eleviq-chat-${[auth.userId, recipientUserId].sort().join('-')}`
+      await blink.realtime.publish(channelName, 'chat', { message: created.rows[0] })
+    } catch (realtimeError) {
+      console.error('Realtime chat publish failed; persisted message remains available to polling fallback', realtimeError)
+    }
     return c.json({ message: created.rows[0] }, 201)
   } catch (error) {
     console.error('Chat message send failed', error)
@@ -492,6 +499,61 @@ app.get('/api/admin/search', async (c) => {
   } catch (error) {
     console.error('Admin search failed', error)
     return c.json({ error: 'Admin search is temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/admin/assistant', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  let auth
+  try {
+    auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+  } catch (error) {
+    console.error('Admin assistant token verification failed', error)
+    return c.json({ error: 'Unable to verify authorization.' }, 401)
+  }
+  if (!auth.valid || !auth.userId) return c.json({ error: 'A valid bearer token is required.' }, 401)
+
+  try {
+    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
+    const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`, [auth.userId, 'system_admin', 'admin', 'super_admin'])
+    if (!(roleResult.rows[0] as { roleName?: string } | undefined)?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
+
+    const body = await c.req.json<Record<string, unknown>>()
+    const question = clean(body.question, 1200)
+    if (!question) return c.json({ error: 'Ask the operations assistant a question first.' }, 400)
+    const range = clean(body.range, 30) || '30d'
+    const [leads, students, readiness, orders, payments, questions, sessions, audit] = await Promise.all([
+      blink.db.sql('SELECT COUNT(*) AS total FROM leads'),
+      blink.db.sql("SELECT COUNT(*) AS total FROM student_profiles WHERE status IN ('active', 'onboarding')"),
+      blink.db.sql("SELECT COALESCE(AVG(readiness_score), 0) AS average, SUM(CASE WHEN readiness_score < 50 OR readiness_score IS NULL THEN 1 ELSE 0 END) AS intervention FROM student_profiles WHERE status IN ('active', 'onboarding')"),
+      blink.db.sql("SELECT COUNT(*) AS total FROM orders WHERE created_at >= datetime('now', '-30 days')"),
+      blink.db.sql("SELECT COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total_cents ELSE 0 END), 0) AS collected, SUM(CASE WHEN payment_status IN ('failed', 'past_due', 'overdue') THEN 1 ELSE 0 END) AS issues FROM orders WHERE created_at >= datetime('now', '-30 days')"),
+      blink.db.sql("SELECT COUNT(*) AS total FROM questions WHERE status = 'active'"),
+      blink.db.sql("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed FROM tutoring_sessions WHERE starts_at >= datetime('now', '-30 days')"),
+      blink.db.sql('SELECT action, resource_type, result, created_at FROM audit_logs ORDER BY created_at DESC LIMIT ?', [8]),
+    ])
+    const value = (row: Record<string, unknown> | undefined, key: string) => Number(row?.[key] || 0)
+    const context = JSON.stringify({
+      selectedRange: range,
+      totals: { leads: value(leads.rows[0], 'total'), activeStudents: value(students.rows[0], 'total'), activeQuestions: value(questions.rows[0], 'total') },
+      studentPerformance: { averageReadiness: Math.round(value(readiness.rows[0], 'average')), interventionProfiles: value(readiness.rows[0], 'intervention') },
+      commerceLast30Days: { orders: value(orders.rows[0], 'total'), collectedCents: value(payments.rows[0], 'collected'), paymentIssues: value(payments.rows[0], 'issues') },
+      tutoringLast30Days: { sessions: value(sessions.rows[0], 'total'), completed: value(sessions.rows[0], 'completed') },
+      recentAuditActivity: audit.rows,
+    })
+    const response = await blink.ai.generateText({
+      messages: [
+        { role: 'system', content: `You are the ELEVIQ Prep Operations Assistant for authorized administrators. ELEVIQ is an education platform serving Phlebotomy, CNA, and LPN learners through tutoring, testing, remediation, and workbooks. Use only the live operational context supplied by the application. Never invent metrics, trends, records, names, payment details, credentials, tokens, private student conversations, answer keys, or security implementation details. If the data is missing, say so clearly. Give concise, action-oriented guidance with a short "What I see" summary and "Recommended next steps" list. Readiness is an educational indicator, not a guarantee of exam results. Do not provide medical, legal, or financial advice.` },
+        { role: 'user', content: `Administrator question: ${question}\n\nLive operational context (selected range: ${range}):\n${context}` },
+      ],
+      maxTokens: 500,
+    })
+    return c.json({ answer: response.text })
+  } catch (error) {
+    console.error('Admin assistant failed', error)
+    return c.json({ error: 'The operations assistant is temporarily unavailable.' }, 503)
   }
 })
 
