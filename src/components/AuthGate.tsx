@@ -5,7 +5,7 @@ import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 
 function LoadingState({ label }: { label: string }) {
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background px-6 text-center">
+    <div suppressHydrationWarning className="flex min-h-dvh items-center justify-center bg-background px-6 text-center">
       <div>
         <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
         <p className="mt-4 text-sm text-muted-foreground">{label}</p>
@@ -106,7 +106,7 @@ function RoleContent({ children }: { children: React.ReactNode }) {
   if (loading) return <LoadingState label="Checking admin permissions…" />
   if (!allowed) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-background px-6 text-center">
+      <div suppressHydrationWarning className="flex min-h-dvh items-center justify-center bg-background px-6 text-center">
         <div className="max-w-md rounded-2xl border border-border bg-card p-8 shadow-md">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-accent">Restricted area</p>
           <h1 className="mt-3 text-2xl font-bold text-primary">System admin access required</h1>

@@ -139,47 +139,82 @@ app.post('/api/auth/log-attempt', async (c) => {
   return c.json({ success: true })
 })
 
-app.post('/api/admin/summary', async (c) => {
+const adminOverview = async (c: Context) => {
   const blink = getBlink(c.env as Record<string, string>)
-  const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
-  if (!auth.valid) return c.json({ error: 'Unauthorized' }, 401)
-
-  const verifiedUserResult = await blink.db.sql(
-    'SELECT email, email_verified FROM users WHERE id = ? LIMIT 1',
-    [auth.userId],
-  )
-  const verifiedUser = verifiedUserResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-  const verifiedEmail = verifiedUser?.email?.toLowerCase()
-  if (!verifiedUser || verifiedEmail?.split('@')[1] !== 'eleviqprep.com' || Number(verifiedUser.emailVerified) !== 1) {
-    return c.json({ error: 'Forbidden' }, 403)
+  let auth
+  try {
+    auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+  } catch (error) {
+    console.error('Admin token verification failed', error)
+    return c.json({ error: 'Unable to verify authorization.' }, 401)
   }
+  if (!auth.valid) return c.json({ error: 'A valid bearer token is required.' }, 401)
 
-  const roleResult = await blink.db.sql(
-    `SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`,
-    [auth.userId, 'system_admin', 'admin', 'super_admin'],
-  )
-  if (!roleResult.rows.length) return c.json({ error: 'Forbidden' }, 403)
+  try {
+    const verifiedUserResult = await blink.db.sql(
+      'SELECT email, email_verified FROM users WHERE id = ? LIMIT 1',
+      [auth.userId],
+    )
+    const verifiedUser = verifiedUserResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    const verifiedEmail = verifiedUser?.email?.trim().toLowerCase()
+    if (!verifiedUser || verifiedEmail?.split('@')[1] !== 'eleviqprep.com' || Number(verifiedUser.emailVerified) !== 1) {
+      return c.json({ error: 'A verified ELEVIQ administrator account is required.' }, 403)
+    }
 
-  const counts = await Promise.all([
-    ['leads', 'leadsCount'],
-    ['student_profiles', 'studentProfilesCount'],
-    ['questions', 'questionsCount'],
-    ['products', 'productsCount'],
-  ].map(async ([table, alias]) => {
-    const result = await blink.db.sql(`SELECT COUNT(*) AS ${alias} FROM ${table}`)
-    return [table, Number(result.rows[0]?.[alias] || 0)] as const
-  }))
-  const countMap = Object.fromEntries(counts)
-  return c.json({
-    success: true,
-    authorized: true,
-    counts: {
-      leads: Number(countMap.leads || 0),
-      students: Number(countMap.student_profiles || 0),
-      questions: Number(countMap.questions || 0),
-      products: Number(countMap.products || 0),
-    },
-  })
-})
+    const roleResult = await blink.db.sql(
+      `SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`,
+      [auth.userId, 'system_admin', 'admin', 'super_admin'],
+    )
+    const role = roleResult.rows[0] as { roleName?: string } | undefined
+    if (!role?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
+
+    const [leadCount, studentCount, questionCount, productCount, leads, students, auditLogs] = await Promise.all([
+      blink.db.sql('SELECT COUNT(*) AS total FROM leads'),
+      blink.db.sql('SELECT COUNT(*) AS total FROM student_profiles'),
+      blink.db.sql('SELECT COUNT(*) AS total FROM questions'),
+      blink.db.sql('SELECT COUNT(*) AS total FROM products'),
+      blink.db.sql(
+        `SELECT id, name, email, stage, program_interest, created_at FROM leads
+         ORDER BY created_at DESC LIMIT ?`,
+        [10],
+      ),
+      blink.db.sql(
+        `SELECT id, user_id, school, program_type, exam_type, status, readiness_score, created_at
+         FROM student_profiles ORDER BY created_at DESC LIMIT ?`,
+        [10],
+      ),
+      blink.db.sql(
+        `SELECT id, user_id, action, resource_type, resource_id, result, metadata_json, created_at
+         FROM audit_logs ORDER BY created_at DESC LIMIT ?`,
+        [10],
+      ),
+    ])
+
+    return c.json({
+      success: true,
+      authorized: true,
+      role: role.roleName,
+      counts: {
+        leads: Number(leadCount.rows[0]?.total || 0),
+        students: Number(studentCount.rows[0]?.total || 0),
+        questions: Number(questionCount.rows[0]?.total || 0),
+        products: Number(productCount.rows[0]?.total || 0),
+      },
+      recent: {
+        leads: leads.rows,
+        students: students.rows,
+        auditLogs: auditLogs.rows,
+      },
+      health: { status: 'ok', database: 'ok', checkedAt: new Date().toISOString() },
+    })
+  } catch (error) {
+    console.error('Admin overview query failed', error)
+    return c.json({ error: 'The admin overview is temporarily unavailable.' }, 503)
+  }
+}
+
+app.post('/api/admin/summary', adminOverview)
+app.get('/api/admin/overview', adminOverview)
 
 export default app
