@@ -139,6 +139,81 @@ app.post('/api/auth/log-attempt', async (c) => {
   return c.json({ success: true })
 })
 
+const isAdminUser = async (blink: ReturnType<typeof getBlink>, userId: string) => {
+  const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`, [userId, 'system_admin', 'admin', 'super_admin'])
+  return Boolean((roleResult.rows[0] as { roleName?: string } | undefined)?.roleName)
+}
+
+const chatAuth = async (c: Context) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+  if (!auth.valid || !auth.userId) return { blink, auth: null }
+  return { blink, auth }
+}
+
+app.get('/api/chat/contacts', async (c) => {
+  try {
+    const { blink, auth } = await chatAuth(c)
+    if (!auth) return c.json({ error: 'A valid session is required.' }, 401)
+    const admin = await isAdminUser(blink, auth.userId)
+    const result = admin
+      ? await blink.db.sql(`SELECT u.id, u.display_name, u.email FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE r.name IN (?, ?, ?) AND u.id != ? ORDER BY u.display_name, u.email LIMIT ?`, ['system_admin', 'admin', 'super_admin', auth.userId, 100])
+      : await blink.db.sql(`SELECT u.id, u.display_name, u.email FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE r.name IN (?, ?, ?) ORDER BY u.display_name, u.email LIMIT ?`, ['system_admin', 'admin', 'super_admin', 10])
+    return c.json({ contacts: result.rows.map(item => ({ id: item.id, displayName: item.displayName, email: item.email })) })
+  } catch (error) {
+    console.error('Chat contacts read failed', error)
+    return c.json({ error: 'Chat contacts are temporarily unavailable.' }, 503)
+  }
+})
+
+app.get('/api/chat/messages', async (c) => {
+  try {
+    const { blink, auth } = await chatAuth(c)
+    if (!auth) return c.json({ error: 'A valid session is required.' }, 401)
+    const participantId = clean(c.req.query('participantId'), 120)
+    const admin = await isAdminUser(blink, auth.userId)
+    if (!admin && participantId && participantId !== auth.userId) return c.json({ error: 'You can only access your own conversations.' }, 403)
+    const target = participantId || auth.userId
+    const result = admin && participantId
+      ? await blink.db.sql(`SELECT id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds, created_at, read_at FROM chat_messages WHERE (sender_user_id = ? AND recipient_user_id = ?) OR (sender_user_id = ? AND recipient_user_id = ?) ORDER BY created_at ASC LIMIT ?`, [auth.userId, target, target, auth.userId, 100])
+      : await blink.db.sql(`SELECT id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds, created_at, read_at FROM chat_messages WHERE sender_user_id = ? OR recipient_user_id = ? ORDER BY created_at DESC LIMIT ?`, [auth.userId, auth.userId, 100])
+    return c.json({ messages: admin && !participantId ? result.rows.reverse() : result.rows })
+  } catch (error) {
+    console.error('Chat messages read failed', error)
+    return c.json({ error: 'Messages are temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/chat/messages', async (c) => {
+  try {
+    const { blink, auth } = await chatAuth(c)
+    if (!auth) return c.json({ error: 'A valid session is required.' }, 401)
+    const body = await c.req.json<Record<string, unknown>>()
+    const recipientUserId = clean(body.recipientUserId, 120)
+    const messageType = body.messageType === 'voice' ? 'voice' : 'text'
+    const text = clean(body.body, 4000)
+    const audioUrl = clean(body.audioUrl, 1000)
+    const audioDurationSeconds = Math.min(3600, Math.max(0, Number(body.audioDurationSeconds || 0)))
+    if (!recipientUserId || recipientUserId === auth.userId) return c.json({ error: 'A valid recipient is required.' }, 400)
+    if (messageType === 'text' && !text) return c.json({ error: 'Message text is required.' }, 400)
+    if (messageType === 'voice' && (!audioUrl || !audioUrl.startsWith('https://'))) return c.json({ error: 'A secure voice note URL is required.' }, 400)
+    const admin = await isAdminUser(blink, auth.userId)
+    const recipientResult = await blink.db.sql('SELECT id FROM users WHERE id = ? LIMIT 1', [recipientUserId])
+    if (!recipientResult.rows[0]) return c.json({ error: 'That recipient does not exist.' }, 404)
+    if (!admin) {
+      const recipientIsAdmin = await isAdminUser(blink, recipientUserId)
+      if (!recipientIsAdmin) return c.json({ error: 'Students may message their assigned ELEVIQ administrator.' }, 403)
+    }
+    const id = `chat_${crypto.randomUUID()}`
+    await blink.db.sql(`INSERT INTO chat_messages (id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, auth.userId, recipientUserId, messageType, text || null, audioUrl || null, messageType === 'voice' ? audioDurationSeconds : null])
+    const created = await blink.db.sql(`SELECT id, sender_user_id, recipient_user_id, message_type, body, audio_url, audio_duration_seconds, created_at, read_at FROM chat_messages WHERE id = ? LIMIT 1`, [id])
+    return c.json({ message: created.rows[0] }, 201)
+  } catch (error) {
+    console.error('Chat message send failed', error)
+    return c.json({ error: 'Message could not be sent.' }, 503)
+  }
+})
+
 const adminOverview = async (c: Context) => {
   const blink = getBlink(c.env as Record<string, string>)
   let auth
