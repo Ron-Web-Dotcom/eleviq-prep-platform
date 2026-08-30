@@ -6,6 +6,7 @@ import { blink } from '@/blink/client'
 
 const phlebotomyAmazonUrl = 'https://a.co/d/00ecVDmr'
 const cnaAmazonUrl = 'https://a.co/d/00uklbhc'
+const contactApiUrl = 'https://el8e8zlx.backend.blink.new/api/contact'
 
 interface LeadForm {
   name: string
@@ -50,19 +51,32 @@ function ContactDialog({ initialProgram, onClose }: { initialProgram?: string; o
     event.preventDefault()
     setSaving(true)
     try {
-      await blink.functions.invoke('api/contact', {
-        body: {
-          name: form.name,
-          email: form.email,
-          phone: form.phone,
-          programInterest: form.programInterest,
-          message: form.message,
-        },
-      })
+      const controller = new AbortController()
+      const timeout = window.setTimeout(() => controller.abort(), 15000)
+      let response: Response
+      try {
+        response = await fetch(contactApiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: form.name,
+            email: form.email,
+            phone: form.phone,
+            programInterest: form.programInterest,
+            message: form.message,
+          }),
+          signal: controller.signal,
+        })
+      } finally {
+        window.clearTimeout(timeout)
+      }
+      const result = await response.json().catch(() => ({})) as { success?: boolean; error?: string }
+      if (!response.ok || result.success !== true) throw new Error(result.error || `Request failed (${response.status})`)
       toast.success('Thanks — your inquiry was sent.', { description: 'Your message went directly to the ELEVIQ team.' })
       onClose()
     } catch (error) {
-      toast.error('We could not send your inquiry.', { description: error instanceof Error ? error.message : 'Please try again.' })
+      const message = error instanceof DOMException && error.name === 'AbortError' ? 'The request timed out. Please try again.' : error instanceof Error ? error.message : 'Please try again.'
+      toast.error('We could not send your inquiry.', { description: message })
     } finally {
       setSaving(false)
     }
