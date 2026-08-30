@@ -105,17 +105,24 @@ app.post('/api/auth/log-attempt', async (c) => {
 
   let auditRecorded = true
   try {
-    await blink.db.table('audit_logs').create({
-      action: 'auth_attempt',
-      resourceType: 'authentication',
-      result,
-      metadataJson: JSON.stringify({ email, ip, userAgent, reason }),
-    })
+    // Use service-role SQL for this unauthenticated audit endpoint. The audit_logs
+    // table intentionally denies client writes, while the backend secret may write.
+    await blink.db.sql(
+      'INSERT INTO audit_logs (id, action, resource_type, result, metadata_json) VALUES (?, ?, ?, ?, ?)',
+      [
+        `audit_${crypto.randomUUID()}`,
+        'auth_attempt',
+        'authentication',
+        result,
+        JSON.stringify({ email, ip, userAgent, reason }),
+      ],
+    )
   } catch (error) {
     auditRecorded = false
     console.error('Auth attempt persistence failed', error)
   }
-  if (!auditRecorded) return c.json({ success: false, auditRecorded: false }, 503)
+  // Audit logging is observability, not an authentication gate. Never turn a
+  // successful or failed sign-in into a 503 when audit storage is unavailable.
   if (result === 'failure') {
     const safeReason = reason || 'Authentication failed'
     try {

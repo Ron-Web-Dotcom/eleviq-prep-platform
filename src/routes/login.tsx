@@ -25,11 +25,11 @@ const safeNext = (value: string | undefined) => value?.startsWith('/') && !value
 const recordAuthAttempt = async (email: string, result: 'success' | 'failure', reason: string) => {
   try {
     await blink.functions.invoke('api/auth/log-attempt', { body: { email, result, reason } })
-    return true
   } catch {
-    // Authentication must remain usable if audit notification delivery is unavailable.
-    return false
+    // Audit logging must never block an otherwise valid authentication attempt.
+    console.warn('Auth attempt audit unavailable')
   }
+  return true
 }
 
 function LoginRoute() {
