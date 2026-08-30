@@ -82,7 +82,10 @@ function AdminConsole() {
       const result = await fetchAdminLockouts()
       setLockouts(result.lockouts)
     } catch (cause) {
-      toast.error('Could not refresh student lockouts', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+      const message = cause instanceof Error ? cause.message : 'Please try again.'
+      if (!/administrator|required|forbidden|verified|expired/i.test(message)) {
+        toast.error('Could not refresh student lockouts', { description: message })
+      }
     } finally {
       setLockoutRefreshing(false)
     }
@@ -147,7 +150,10 @@ function AdminConsole() {
           })
         }
       } catch (cause) {
-        if (activeRequest) toast.error('Could not load student lockouts', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+        const message = cause instanceof Error ? cause.message : 'Please try again.'
+        if (activeRequest && !/administrator|required|forbidden|verified|expired/i.test(message)) {
+          toast.error('Could not load student lockouts', { description: message })
+        }
       } finally {
         if (activeRequest) {
           if (initial) setLockoutLoading(false)

@@ -107,15 +107,22 @@ async function getAdminToken() {
 export async function checkAdminAccess(): Promise<{ authorized: boolean; role?: string }> {
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 10000)
     try {
       const token = await getAdminToken()
-      const response = await fetch(adminAccessUrl, { headers: { Authorization: `Bearer ${token}` } })
+      const response = await fetch(adminAccessUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      })
       const body = await response.json().catch(() => ({})) as { authorized?: boolean; role?: string; error?: string }
       if (response.ok || response.status === 403) return { authorized: body.authorized === true, role: body.role }
       if (response.status !== 401 && response.status !== 503) throw new Error(body.error || `Admin access check failed (${response.status})`)
       lastError = new Error(body.error || `Admin access check failed (${response.status})`)
     } catch (cause) {
-      lastError = cause
+      lastError = cause instanceof DOMException && cause.name === 'AbortError' ? new Error('Admin access verification timed out.') : cause
+    } finally {
+      window.clearTimeout(timeout)
     }
     await wait(500 * (attempt + 1))
   }

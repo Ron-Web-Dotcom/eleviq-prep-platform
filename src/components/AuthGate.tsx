@@ -76,41 +76,37 @@ function RoleContent({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true
-    let unsubscribe: (() => void) | undefined
-    const start = async () => {
-      // Wait for the SDK's initial auth hydration before subscribing. This
-      // prevents a transient empty state from being treated as a denial.
-      await new Promise<void>(resolve => window.setTimeout(resolve, 300))
-      if (!active) return
-      unsubscribe = blink.auth.onAuthStateChanged((state) => {
-        if (state.isLoading || !active) return
-        if (!state.user) {
-          setAllowed(false)
-          setLoading(false)
-          return
+    const unsubscribe = blink.auth.onAuthStateChanged((state) => {
+      // Subscribe immediately so the SDK can deliver its current hydrated state.
+      // Delaying this listener can miss the one-time initial callback and leave
+      // the gate on “Checking admin permissions…” forever.
+      if (state.isLoading || !active) return
+      if (!state.user) {
+        checkedUserId.current = ''
+        setAllowed(false)
+        setLoading(false)
+        return
+      }
+      if (checkedUserId.current === state.user.id) return
+      checkedUserId.current = state.user.id
+      void (async () => {
+        try {
+          const access = await checkAdminAccess()
+          if (active) setAllowed(access.authorized)
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : ''
+          const expectedDenial = /administrator|required|forbidden|verified/i.test(message)
+          if (!expectedDenial) console.error('Admin permission check failed', cause)
+          if (active) setAllowed(false)
+        } finally {
+          if (active) setLoading(false)
         }
-        if (checkedUserId.current === state.user.id) return
-        checkedUserId.current = state.user.id
-        void (async () => {
-          try {
-            const access = await checkAdminAccess()
-            if (active) setAllowed(access.authorized)
-          } catch (cause) {
-            const message = cause instanceof Error ? cause.message : ''
-            const expectedDenial = /administrator|required|forbidden|verified/i.test(message)
-            if (!expectedDenial) console.error('Admin permission check failed', cause)
-            if (active) setAllowed(false)
-          } finally {
-            if (active) setLoading(false)
-          }
-        })()
-      })
-    }
-    void start()
+      })()
+    })
 
     return () => {
       active = false
-      unsubscribe?.()
+      unsubscribe()
     }
   }, [])
 
