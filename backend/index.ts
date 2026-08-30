@@ -409,6 +409,12 @@ const isAdminUser = async (blink: ReturnType<typeof getBlink>, userId: string) =
   return Boolean((roleResult.rows[0] as { roleName?: string } | undefined)?.roleName)
 }
 
+const isVerifiedAdmin = async (blink: ReturnType<typeof getBlink>, userId: string) => {
+  const userResult = await blink.db.sql('SELECT email_verified FROM users WHERE id = ? LIMIT 1', [userId])
+  const user = userResult.rows[0] as { emailVerified?: string | number } | undefined
+  return Boolean(user && Number(user.emailVerified) === 1 && await isAdminUser(blink, userId))
+}
+
 // Keep the authorization handshake lightweight. The admin dashboard loads a
 // larger operational overview after this check succeeds; permission checks
 // should never need to wait for all dashboard metrics and recent records.
@@ -417,11 +423,11 @@ app.get('/api/admin/access', async (c) => {
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
     if (!auth.valid || !auth.userId) return c.json({ authorized: false, error: 'A valid bearer token is required.' }, 401)
-    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
-    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    const verifiedEmail = user?.email?.trim().toLowerCase()
-    if (!user || verifiedEmail?.split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) {
-      return c.json({ authorized: false, error: 'A verified ELEVIQ administrator account is required.' }, 403)
+    if (!(await isVerifiedAdmin(blink, auth.userId))) {
+      // A valid signed-in user without the admin role is an expected access
+      // decision, not a failed API request. Keep the gate quiet in the browser
+      // while still withholding every protected admin response.
+      return c.json({ authorized: false, error: 'A verified ELEVIQ administrator account is required.' })
     }
     const roleResult = await blink.db.sql(
       `SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id
@@ -429,7 +435,6 @@ app.get('/api/admin/access', async (c) => {
       [auth.userId, 'system_admin', 'admin', 'super_admin'],
     )
     const role = (roleResult.rows[0] as { roleName?: string } | undefined)?.roleName
-    if (!role) return c.json({ authorized: false, error: 'Administrator role required.' }, 403)
     return c.json({ authorized: true, role })
   } catch (error) {
     console.error('Admin access check failed', error)
@@ -530,9 +535,8 @@ const adminOverview = async (c: Context) => {
       'SELECT email, email_verified FROM users WHERE id = ? LIMIT 1',
       [auth.userId],
     )
-    const verifiedUser = verifiedUserResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    const verifiedEmail = verifiedUser?.email?.trim().toLowerCase()
-    if (!verifiedUser || verifiedEmail?.split('@')[1] !== 'eleviqprep.com' || Number(verifiedUser.emailVerified) !== 1) {
+    const verifiedUser = verifiedUserResult.rows[0] as { emailVerified?: string | number } | undefined
+    if (!verifiedUser || Number(verifiedUser.emailVerified) !== 1) {
       return c.json({ error: 'A verified ELEVIQ administrator account is required.' }, 403)
     }
 
@@ -760,7 +764,7 @@ const requireAdmin = async (c: Context, blink: ReturnType<typeof getBlink>) => {
     if (!auth.valid || !auth.userId) return { auth: null, error: c.json({ error: 'A valid bearer token is required.' }, 401) }
     const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
     const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return { auth: null, error: c.json({ error: 'Administrator access required.' }, 403) }
+    if (!user || Number(user.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return { auth: null, error: c.json({ error: 'Administrator access required.' }, 403) }
     return { auth, error: null }
   } catch (error) {
     console.error('Admin authorization failed', error)
@@ -802,7 +806,7 @@ app.get('/api/admin/search', async (c) => {
   try {
     const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
     const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
+    if (!user || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
     const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`, [auth.userId, 'system_admin', 'admin', 'super_admin'])
     if (!(roleResult.rows[0] as { roleName?: string } | undefined)?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
 
@@ -843,7 +847,7 @@ app.post('/api/admin/assistant', async (c) => {
   try {
     const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
     const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
+    if (!user || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
     const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`, [auth.userId, 'system_admin', 'admin', 'super_admin'])
     if (!(roleResult.rows[0] as { roleName?: string } | undefined)?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
 
@@ -892,7 +896,7 @@ const sendAdminTemporaryPassword = async (c: Context) => {
   try {
     const adminUser = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
     const admin = adminUser.rows[0] as { email?: string; emailVerified?: string | number } | undefined
-    if (!admin || admin.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(admin.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return c.json({ error: 'Administrator access required.' }, 403)
+    if (!admin || Number(admin.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return c.json({ error: 'Administrator access required.' }, 403)
     const body = await c.req.json<Record<string, unknown>>()
     const email = normalizeEmail(body.email)
     if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com') return c.json({ error: 'Enter a valid ELEVIQ student email.' }, 400)

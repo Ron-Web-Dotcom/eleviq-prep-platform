@@ -96,7 +96,9 @@ function RoleContent({ children }: { children: React.ReactNode }) {
             const access = await checkAdminAccess()
             if (active) setAllowed(access.authorized)
           } catch (cause) {
-            console.error('Admin permission check failed', cause)
+            const message = cause instanceof Error ? cause.message : ''
+            const expectedDenial = /administrator|required|forbidden|verified/i.test(message)
+            if (!expectedDenial) console.error('Admin permission check failed', cause)
             if (active) setAllowed(false)
           } finally {
             if (active) setLoading(false)

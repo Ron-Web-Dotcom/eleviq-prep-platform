@@ -79,7 +79,9 @@ function Login() {
     event.preventDefault(); setError(''); setAuthNotice('')
     const normalized = email.trim().toLowerCase()
     if (!normalized) return setError('Enter your email address.')
-    if (normalized.split('@')[1] !== 'eleviqprep.com') return setError(adminIntent ? 'Use your verified @eleviqprep.com username.' : 'ELEVIQ accounts must use an @eleviqprep.com email address.')
+    const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
+    if (!validEmail) return setError('Enter a valid email address.')
+    if (!adminIntent && normalized.split('@')[1] !== 'eleviqprep.com') return setError('ELEVIQ accounts must use an @eleviqprep.com email address.')
     if (mode === 'signin' && !emailConfirmed && !adminIntent) {
       setBusy(true)
       try {

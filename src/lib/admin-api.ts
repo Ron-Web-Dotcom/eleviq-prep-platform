@@ -111,7 +111,7 @@ export async function checkAdminAccess(): Promise<{ authorized: boolean; role?: 
       const token = await getAdminToken()
       const response = await fetch(adminAccessUrl, { headers: { Authorization: `Bearer ${token}` } })
       const body = await response.json().catch(() => ({})) as { authorized?: boolean; role?: string; error?: string }
-      if (response.ok) return { authorized: body.authorized === true, role: body.role }
+      if (response.ok || response.status === 403) return { authorized: body.authorized === true, role: body.role }
       if (response.status !== 401 && response.status !== 503) throw new Error(body.error || `Admin access check failed (${response.status})`)
       lastError = new Error(body.error || `Admin access check failed (${response.status})`)
     } catch (cause) {
