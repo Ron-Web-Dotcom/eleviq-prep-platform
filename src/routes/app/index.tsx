@@ -56,7 +56,7 @@ function StudentChatPanel() {
 
 function DashboardHome() {
   return (
-    <div className="relative space-y-8 overflow-hidden">
+    <div className="relative space-y-8 overflow-hidden"><section className="rounded-2xl border border-primary/15 bg-card p-5 shadow-sm"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center"><div><p className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-accent">New study experience</p><h2 className="mt-1 font-serif text-2xl text-primary">ELEVIQ Test Mode</h2><p className="mt-1 text-sm text-muted-foreground">Practice pacing, case studies, multi-select, and clinical-judgment interactions.</p></div><a href="/test-mode" className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 active:translate-y-0">Open Test Mode <ArrowRight className="h-4 w-4" /></a></div></section>
       <div className="pointer-events-none absolute -right-32 -top-28 h-72 w-72 rounded-full bg-accent/15 blur-3xl" />
       <section className="relative overflow-hidden rounded-[2rem] bg-primary p-6 text-primary-foreground shadow-lg shadow-primary/15 sm:p-8">
         <div className="absolute -right-10 -top-10 h-48 w-48 rounded-full border-[24px] border-primary-foreground/10" />

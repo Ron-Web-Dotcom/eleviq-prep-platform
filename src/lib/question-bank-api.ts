@@ -2,11 +2,15 @@ import { blink } from '@/blink/client'
 
 export type Choice = { id: string; text: string }
 
+export type QuestionKind = 'multiple_choice' | 'multiple_select' | 'case_study' | 'bow_tie'
+export type CaseScenario = { history?: string; assessment?: string; vitals?: Array<{ label: string; value: string }>; labs?: Array<{ label: string; value: string }>; medications?: string[]; timeline?: Array<{ time: string; event: string }> }
+export type BowTieInteraction = { condition: string; actions: Choice[]; monitoring: Choice[]; correctActionIds: string[]; correctMonitoringIds: string[] }
+
 export type QuestionBankQuestion = {
   id: string
   programId?: string
   questionText: string
-  questionType: 'multiple_choice' | 'multiple_select'
+  questionType: QuestionKind
   choices: Choice[]
   correctAnswerIds: string[]
   rationale: string
@@ -14,6 +18,10 @@ export type QuestionBankQuestion = {
   subtopic?: string
   difficulty?: string
   clinicalJudgmentCategory?: string
+  scenario?: CaseScenario
+  interaction?: BowTieInteraction
+  caseId?: string
+  caseOrder?: number
   status: 'draft' | 'active'
   updatedAt?: string
 }
@@ -46,7 +54,7 @@ async function adminRequest<T>(path: string, init: RequestInit = {}): Promise<T>
   }
 }
 
-export async function fetchQuestions(query = '') {
+export async function fetchQuestions(query = ''): Promise<QuestionBankQuestion[]> {
   const params = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''
   const result = await adminRequest<{ questions?: QuestionBankQuestion[] }>(params, { method: 'GET' })
   return Array.isArray(result.questions) ? result.questions : []

@@ -16,7 +16,9 @@ import { Route as CreatePasswordRouteImport } from './routes/create-password'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as TestModeRouteImport } from './routes/test-mode'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as AppTestModeRouteImport } from './routes/app/test-mode'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -53,9 +55,19 @@ const TermsRoute = TermsRouteImport.update({
   path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TestModeRoute = TestModeRouteImport.update({
+  id: '/test-mode',
+  path: '/test-mode',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTestModeRoute = AppTestModeRouteImport.update({
+  id: '/test-mode',
+  path: '/test-mode',
   getParentRoute: () => AppRoute,
 } as any)
 
@@ -67,6 +79,8 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/test-mode': typeof TestModeRoute
+  '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRoutesByTo {
@@ -76,6 +90,8 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/test-mode': typeof TestModeRoute
+  '/app/test-mode': typeof AppTestModeRoute
   '/app': typeof AppIndexRoute
 }
 export interface FileRoutesById {
@@ -87,6 +103,8 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/test-mode': typeof TestModeRoute
+  '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
@@ -99,6 +117,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/test-mode'
+    | '/app/test-mode'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -108,6 +128,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/test-mode'
+    | '/app/test-mode'
     | '/app'
   id:
     | '__root__'
@@ -118,6 +140,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/test-mode'
+    | '/app/test-mode'
     | '/app/'
   fileRoutesById: FileRoutesById
 }
@@ -129,6 +153,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PrivacyRoute: typeof PrivacyRoute
   TermsRoute: typeof TermsRoute
+  TestModeRoute: typeof TestModeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -182,6 +207,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/test-mode': {
+      id: '/test-mode'
+      path: '/test-mode'
+      fullPath: '/test-mode'
+      preLoaderRoute: typeof TestModeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/app/': {
       id: '/app/'
       path: '/'
@@ -189,14 +221,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/test-mode': {
+      id: '/app/test-mode'
+      path: '/test-mode'
+      fullPath: '/app/test-mode'
+      preLoaderRoute: typeof AppTestModeRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
+  AppTestModeRoute: typeof AppTestModeRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppTestModeRoute: AppTestModeRoute,
   AppIndexRoute: AppIndexRoute,
 }
 
@@ -210,6 +251,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PrivacyRoute: PrivacyRoute,
   TermsRoute: TermsRoute,
+  TestModeRoute: TestModeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

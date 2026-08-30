@@ -943,6 +943,12 @@ const parseJsonArray = (value: unknown): unknown[] => {
   try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
 }
 
+const parseJsonObject = (value: unknown): Record<string, unknown> | undefined => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  try { const parsed = JSON.parse(value); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined } catch { return undefined }
+}
+
 const normalizeQuestionPayload = (body: Record<string, unknown>) => {
   const questionText = clean(body.questionText, 5000)
   const rawChoices = Array.isArray(body.choices) ? body.choices : []
@@ -950,19 +956,23 @@ const normalizeQuestionPayload = (body: Record<string, unknown>) => {
     const item = choice && typeof choice === 'object' ? choice as Record<string, unknown> : {}
     return { id: clean(item.id, 80) || `choice_${String.fromCharCode(65 + index)}`, text: clean(item.text, 1000) }
   }).filter(choice => choice.text)
+  const questionType = ['multiple_choice', 'multiple_select', 'case_study', 'bow_tie'].includes(String(body.questionType)) ? String(body.questionType) : 'multiple_choice'
   const correctAnswerIds = Array.isArray(body.correctAnswerIds) ? body.correctAnswerIds.map(value => clean(value, 80)).filter(Boolean) : []
   const validIds = new Set(choices.map(choice => choice.id))
+  const interaction = parseJsonObject(body.interaction)
   if (!questionText) throw new Error('Question text is required.')
-  if (choices.length < 2) throw new Error('At least two answer choices are required.')
-  if (!correctAnswerIds.length || correctAnswerIds.some(id => !validIds.has(id))) throw new Error('Choose at least one valid correct answer.')
-  if (body.questionType === 'multiple_choice' && correctAnswerIds.length > 1) throw new Error('One-best-answer questions can have only one correct answer.')
+  if (questionType !== 'bow_tie' && choices.length < 2) throw new Error('At least two answer choices are required.')
+  if (questionType !== 'bow_tie' && (!correctAnswerIds.length || correctAnswerIds.some(id => !validIds.has(id)))) throw new Error('Choose at least one valid correct answer.')
+  if (questionType === 'multiple_choice' && correctAnswerIds.length > 1) throw new Error('One-best-answer questions can have only one correct answer.')
+  if (questionType === 'bow_tie' && (!interaction?.condition || !Array.isArray(interaction.actions) || !Array.isArray(interaction.monitoring) || !Array.isArray(interaction.correctActionIds) || !Array.isArray(interaction.correctMonitoringIds) || interaction.correctActionIds.length !== 2 || interaction.correctMonitoringIds.length !== 2)) throw new Error('Bow-Tie items need one condition, two correct actions, and two correct monitoring outcomes.')
   if (body.status === 'active' && !clean(body.rationale, 6000)) throw new Error('Add an instructor rationale before publishing this question.')
   return {
     questionText, choices, correctAnswerIds,
-    questionType: body.questionType === 'multiple_select' ? 'multiple_select' : 'multiple_choice',
+    questionType,
     rationale: clean(body.rationale, 6000), topic: clean(body.topic, 160), subtopic: clean(body.subtopic, 160),
     difficulty: clean(body.difficulty, 40) || 'medium', clinicalJudgmentCategory: clean(body.clinicalJudgmentCategory, 160),
     status: body.status === 'active' ? 'active' : 'draft', programId: clean(body.programId, 120),
+    scenario: parseJsonObject(body.scenario), interaction, caseId: clean(body.caseId, 120), caseOrder: Number(body.caseOrder || 0),
   }
 }
 
@@ -979,14 +989,14 @@ const saveAdminQuestion = async (c: Context, updating: boolean) => {
     if (updating) {
       const existing = await blink.db.sql('SELECT id FROM questions WHERE id = ? LIMIT 1', [id])
       if (!existing.rows[0]) return c.json({ error: 'Question not found.' }, 404)
-      await blink.db.sql(`UPDATE questions SET program_id = ?, question_text = ?, question_type = ?, choices_json = ?, correct_answers_json = ?, rationale = ?, topic = ?, subtopic = ?, difficulty = ?, clinical_judgment_category = ?, status = ?, updated_at = ? WHERE id = ?`, [question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, question.status, now, id])
+      await blink.db.sql(`UPDATE questions SET program_id = ?, question_text = ?, question_type = ?, choices_json = ?, correct_answers_json = ?, rationale = ?, topic = ?, subtopic = ?, difficulty = ?, clinical_judgment_category = ?, scenario_json = ?, interaction_json = ?, case_id = ?, case_order = ?, status = ?, updated_at = ? WHERE id = ?`, [question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, JSON.stringify(question.scenario || {}), JSON.stringify(question.interaction || {}), question.caseId || null, question.caseOrder || 0, question.status, now, id])
     } else {
-      await blink.db.sql(`INSERT INTO questions (id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, tags_json, status, author_source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, '[]', question.status, 'instructor_workspace', now])
+      await blink.db.sql(`INSERT INTO questions (id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, scenario_json, interaction_json, case_id, case_order, tags_json, status, author_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, JSON.stringify(question.scenario || {}), JSON.stringify(question.interaction || {}), question.caseId || null, question.caseOrder || 0, '[]', question.status, 'instructor_workspace', now, now])
     }
     await blink.db.sql('INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)', [`audit_${crypto.randomUUID()}`, auth.userId, updating ? 'question_updated' : 'question_created', 'question', id, 'success', JSON.stringify({ status: question.status, questionType: question.questionType })])
-    const saved = await blink.db.sql('SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, status, updated_at FROM questions WHERE id = ? LIMIT 1', [id])
+    const saved = await blink.db.sql('SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, scenario_json, interaction_json, case_id, case_order, status, updated_at FROM questions WHERE id = ? LIMIT 1', [id])
     const row = saved.rows[0]
-    return c.json({ question: { id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType, choices: parseJsonArray(row.choicesJson), correctAnswerIds: parseJsonArray(row.correctAnswersJson), rationale: row.rationale || '', topic: row.topic, subtopic: row.subtopic, difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory, status: row.status, updatedAt: row.updatedAt } }, updating ? 200 : 201)
+    return c.json({ question: { id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType, choices: parseJsonArray(row.choicesJson), correctAnswerIds: parseJsonArray(row.correctAnswersJson), rationale: row.rationale || '', topic: row.topic, subtopic: row.subtopic, difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory, scenario: parseJsonObject(row.scenarioJson), interaction: parseJsonObject(row.interactionJson), caseId: row.caseId, caseOrder: Number(row.caseOrder || 0), status: row.status, updatedAt: row.updatedAt } }, updating ? 200 : 201)
   } catch (error) {
     console.error('Admin question save failed', error)
     return c.json({ error: error instanceof Error ? error.message : 'The question could not be saved.' }, 400)
@@ -1000,12 +1010,13 @@ app.get('/api/admin/questions', async (c) => {
     if (error || !auth) return error
     const query = clean(c.req.query('q'), 120)
     const like = `%${query.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
-    const result = await blink.db.sql(`SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, status, updated_at
+    const result = await blink.db.sql(`SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, scenario_json, interaction_json, case_id, case_order, status, updated_at
       FROM questions WHERE (? = '' OR question_text LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`, [query, like, like, 100])
     return c.json({ questions: result.rows.map((row) => ({
       id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType,
       choices: parseJsonArray(row.choicesJson), correctAnswerIds: parseJsonArray(row.correctAnswersJson), rationale: row.rationale || '',
       topic: row.topic, subtopic: row.subtopic, difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory,
+      scenario: parseJsonObject(row.scenarioJson), interaction: parseJsonObject(row.interactionJson), caseId: row.caseId, caseOrder: Number(row.caseOrder || 0),
       status: row.status, updatedAt: row.updatedAt,
     })) })
   } catch (error) {
@@ -1027,16 +1038,16 @@ app.post('/api/admin/questions/ai', async (c) => {
     const questionText = clean(body.questionText, 3000)
     const topic = clean(body.topic, 160) || 'nursing and allied-health exam preparation'
     const difficulty = clean(body.difficulty, 40) || 'medium'
-    const type = body.questionType === 'multiple_select' ? 'multiple_select' : 'multiple_choice'
-    const context = JSON.stringify({ questionText, topic, difficulty, questionType: type, choices: body.choices, correctAnswerIds: body.correctAnswerIds, rationale: clean(body.rationale, 4000) })
+    const type = ['multiple_choice', 'multiple_select', 'case_study', 'bow_tie'].includes(String(body.questionType)) ? String(body.questionType) : 'multiple_choice'
+    const context = JSON.stringify({ questionText, topic, difficulty, questionType: type, choices: body.choices, correctAnswerIds: body.correctAnswerIds, scenario: body.scenario, interaction: body.interaction, rationale: clean(body.rationale, 4000) })
     const system = 'You are the ELEVIQ Prep instructor assistant. Create accurate, exam-style nursing and allied-health learning content for Phlebotomy, CNA, and LPN learners. Be concise, clinically responsible, and explain reasoning in plain language. Do not provide personalized medical advice. Treat every response as an instructor draft that requires human review before publication.'
     const prompt = mode === 'question'
-      ? `Draft one original ${type === 'multiple_select' ? 'select-all-that-apply' : 'multiple-choice'} question for the topic "${topic}" at ${difficulty} difficulty. Return a clear question stem plus metadata. Do not include answer choices yet.\nContext: ${context}`
+      ? `Draft one original ${type === 'multiple_select' ? 'select-all-that-apply' : type === 'case_study' ? 'case-study linked' : type === 'bow_tie' ? 'Bow-Tie clinical-judgment' : 'multiple-choice'} question for the topic "${topic}" at ${difficulty} difficulty. Return a clear question stem plus metadata. For a case study, include concise patient context fields. For a Bow-Tie, include a priority condition plus action and monitoring field guidance. Do not copy proprietary exam content.\nContext: ${context}`
       : mode === 'choices'
         ? `Create four distinct answer choices for this question. Include exactly the correct answer id(s), using ids choice_A, choice_B, choice_C, and choice_D. For multiple_choice return exactly one correct id; for multiple_select return two or more only when clinically appropriate.\nContext: ${context}`
         : `Write a rigorous instructor rationale for this question. State why the correct answer is best, address the key distractor reasoning when useful, and keep it educational rather than personalized medical advice.\nContext: ${context}`
     const schema = mode === 'question' ? {
-      type: 'object', properties: { questionText: { type: 'string' }, topic: { type: 'string' }, subtopic: { type: 'string' }, difficulty: { type: 'string' }, clinicalJudgmentCategory: { type: 'string' } }, required: ['questionText', 'topic', 'difficulty'],
+      type: 'object', properties: { questionText: { type: 'string' }, topic: { type: 'string' }, subtopic: { type: 'string' }, difficulty: { type: 'string' }, clinicalJudgmentCategory: { type: 'string' }, scenario: { type: 'object', properties: { history: { type: 'string' }, assessment: { type: 'string' }, vitals: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, labs: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, medications: { type: 'array', items: { type: 'string' } }, timeline: { type: 'array', items: { type: 'object', properties: { time: { type: 'string' }, event: { type: 'string' } } } } }, required: [] }, interaction: { type: 'object', properties: { condition: { type: 'string' }, actions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } }, monitoring: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } } }, required: [] } }, required: ['questionText', 'topic', 'difficulty'],
     } : mode === 'choices' ? {
       type: 'object', properties: { choices: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } }, correctAnswerIds: { type: 'array', items: { type: 'string' } } }, required: ['choices', 'correctAnswerIds'],
     } : {
@@ -1055,6 +1066,55 @@ app.post('/api/admin/questions/ai', async (c) => {
   } catch (error) {
     console.error('Question AI assistance failed', error)
     return c.json({ error: error instanceof Error ? error.message : 'Question AI assistance is temporarily unavailable.' }, 503)
+  }
+})
+
+const isSameAnswerSet = (selected: string[], correct: string[]) => selected.length === correct.length && selected.every(value => correct.includes(value))
+const questionForTest = (row: Record<string, unknown>) => ({
+  id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType,
+  choices: parseJsonArray(row.choicesJson), correctAnswerIds: [], rationale: '', topic: row.topic, subtopic: row.subtopic,
+  difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory, scenario: parseJsonObject(row.scenarioJson),
+  interaction: (() => { const item = parseJsonObject(row.interactionJson); if (!item) return undefined; return { ...item, correctActionIds: [], correctMonitoringIds: [] } })(), caseId: row.caseId, caseOrder: Number(row.caseOrder || 0), status: row.status,
+})
+
+app.get('/api/test-mode/session', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid student session is required.' }, 401)
+    const result = await blink.db.sql(`SELECT id, program_id, question_text, question_type, choices_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, scenario_json, interaction_json, case_id, case_order, status FROM questions WHERE status = 'active' ORDER BY COALESCE(case_id, ''), case_order, updated_at DESC LIMIT ?`, [50])
+    return c.json({ session: { id: `test_session_${auth.userId}`, title: 'ELEVIQ Clinical Judgment Set', mode: 'practice', timeLimitMinutes: 20, questions: result.rows.map(questionForTest) } })
+  } catch (error) {
+    console.error('Test session load failed', error)
+    return c.json({ error: 'Test Mode is temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/test-mode/submit', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid student session is required.' }, 401)
+    const body = await c.req.json<Record<string, unknown>>()
+    const answers = body.answers && typeof body.answers === 'object' ? body.answers as Record<string, unknown> : {}
+    const flagged = Array.isArray(body.flagged) ? body.flagged.map(String) : []
+    const elapsedSeconds = Math.max(0, Math.min(86400, Number(body.elapsedSeconds || 0)))
+    const ids = Object.keys(answers)
+    const allQuestions = await blink.db.sql(`SELECT id, question_text, question_type, correct_answers_json, rationale, topic FROM questions WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?`, [50])
+    const rows = allQuestions.rows
+    const items = rows.map(row => {
+      const correctAnswerIds = parseJsonArray(row.correctAnswersJson).map(String)
+      const selected = Array.isArray(answers[row.id]) ? (answers[row.id] as unknown[]).map(String) : []
+      const correct = row.questionType === 'bow_tie' ? false : isSameAnswerSet(selected, correctAnswerIds)
+      return { id: row.id, questionText: row.questionText, topic: row.topic, correct, selected, correctAnswerIds, rationale: row.rationale || 'No rationale has been added yet.', remediation: correct ? 'Maintain this skill with spaced review.' : `Review ${row.topic || 'this topic'} and retry a focused practice set.` }
+    })
+    const scorePercent = items.length ? Math.round(items.filter(item => item.correct).length / items.length * 100) : 0
+    const attemptId = `attempt_${crypto.randomUUID()}`
+    await blink.db.sql('INSERT INTO test_attempts (id, user_id, test_id, score_percent, submitted_at, status) VALUES (?, ?, ?, ?, ?, ?)', [attemptId, auth.userId, `test_session_${auth.userId}`, scorePercent, new Date().toISOString(), 'submitted'])
+    return c.json({ result: { scorePercent, answered: ids.length, total: items.length, flagged: flagged.length, elapsedSeconds, items } })
+  } catch (error) {
+    console.error('Test submission failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'Test submission failed.' }, 503)
   }
 })
 
