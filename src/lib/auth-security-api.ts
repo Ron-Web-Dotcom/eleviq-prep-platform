@@ -27,6 +27,31 @@ export async function checkEmailLegitimacy(email: string): Promise<EmailLegitima
   }
 }
 
+export type LockoutStatus = {
+  locked: boolean
+  lockedUntil?: string
+  message?: string
+  failedAttempts?: number
+}
+
+export async function checkStudentLockout(email: string): Promise<LockoutStatus> {
+  return await postSecurityCheck('/lockout/check', { email }) as LockoutStatus
+}
+
+export async function recordStudentAuthAttempt(email: string, result: 'success' | 'failure', reason: string) {
+  return await postSecurityCheck('/log-attempt', { email, result, reason, studentPortal: true }) as LockoutStatus & { success?: boolean; recorded?: boolean }
+}
+
+export async function verifyTemporaryPassword(email: string, password: string): Promise<{ resetToken: string; resetProof: string; email: string }> {
+  const result = await postSecurityCheck('/temporary-login', { email, password }) as Partial<{ resetToken: string; resetProof: string; email: string }>
+  if (!result.resetToken || !result.resetProof || !result.email) throw new Error('The temporary password response was incomplete.')
+  return result as { resetToken: string; resetProof: string; email: string }
+}
+
+export async function completeStudentLockoutReset(email: string, proof: string) {
+  return await postSecurityCheck('/lockout/complete-reset', { email, proof }) as { success?: boolean }
+}
+
 export async function getPasswordGuidance(signals: PasswordSignals): Promise<string> {
   const result = await postSecurityCheck('/password-guidance', { signals }) as { guidance?: string }
   return result.guidance || 'Use a long, unique password that meets every requirement below.'

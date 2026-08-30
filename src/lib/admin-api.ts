@@ -7,6 +7,28 @@ export interface AdminSearchResult {
   subtitle?: string
 }
 
+export interface AdminLockout {
+  id?: string
+  email?: string
+  userId?: string
+  displayName?: string
+  failedAttempts?: string | number
+  lockedUntil?: string
+  lastFailedAt?: string
+  resetSentAt?: string
+  updatedAt?: string
+}
+
+export interface AdminLockoutEvent {
+  id?: string
+  email?: string
+  userId?: string
+  lockedUntil?: string
+  attemptCount?: string | number
+  notifiedAt?: string
+  createdAt?: string
+}
+
 export interface AdminOverview {
   authorized: boolean
   role?: string
@@ -42,7 +64,32 @@ export interface AdminOverview {
 }
 
 const adminOverviewUrl = 'https://el8e8zlx.backend.blink.new/api/admin/overview'
+const adminLockoutsUrl = 'https://el8e8zlx.backend.blink.new/api/admin/lockouts'
+const adminTemporaryPasswordUrl = 'https://el8e8zlx.backend.blink.new/api/admin/send-temporary-password'
 let cachedOverview: { token: string; range: string; request: Promise<AdminOverview> } | null = null
+
+export async function fetchAdminLockouts(): Promise<{ lockouts: AdminLockout[]; events: AdminLockoutEvent[] }> {
+  const token = await getAdminToken()
+  const response = await fetch(adminLockoutsUrl, { headers: { Authorization: `Bearer ${token}` } })
+  const body = await response.json().catch(() => ({})) as { lockouts?: AdminLockout[]; events?: AdminLockoutEvent[]; error?: string }
+  if (!response.ok) throw new Error(body.error || `Lockout request failed (${response.status})`)
+  return { lockouts: Array.isArray(body.lockouts) ? body.lockouts : [], events: Array.isArray(body.events) ? body.events : [] }
+}
+
+export async function sendTemporaryPassword(email: string) {
+  const token = await getAdminToken()
+  const response = await fetch(adminTemporaryPasswordUrl, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) })
+  const body = await response.json().catch(() => ({})) as { success?: boolean; error?: string }
+  if (!response.ok) throw new Error(body.error || `Temporary password request failed (${response.status})`)
+  return body
+}
+
+async function getAdminToken() {
+  if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
+  const token = await blink.auth.getValidToken()
+  if (!token) throw new Error('Your admin session has expired. Please sign in again.')
+  return token
+}
 
 type FetchAdminOptions = { force?: boolean; range?: string }
 

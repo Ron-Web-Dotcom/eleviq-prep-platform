@@ -19,6 +19,21 @@ const escapeHtml = (value: string) => value
 
 const clean = (value: unknown, maxLength: number) => typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
 
+const hashSecret = async (value: string, salt: string) => {
+  const encoded = new TextEncoder().encode(`${salt}:${value}`)
+  const digest = await crypto.subtle.digest('SHA-256', encoded)
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const randomTemporaryPassword = () => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%'
+  const bytes = new Uint8Array(18)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, byte => alphabet[byte % alphabet.length]).join('')
+}
+
+const formatLockout = (lockedUntil: string) => ({ locked: true, lockedUntil, message: `This student portal is locked until ${new Date(lockedUntil).toLocaleString()} after 3 unsuccessful sign-in attempts. An administrator must send a temporary password before access can be restored.` })
+
 app.get('/health', (c) => c.json({ ok: true }))
 
 app.post('/api/contact', async (c) => {
@@ -178,49 +193,132 @@ app.post('/api/auth/log-attempt', async (c) => {
   const body = await c.req.json<Record<string, unknown>>()
   const email = normalizeEmail(body.email)
   const result = body.result === 'success' || body.result === 'failure' ? body.result : ''
-  if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com' || !result) return c.json({ success: true })
+  const studentPortal = body.studentPortal !== false
+  if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com' || !result) return c.json({ success: true, recorded: false })
 
   const ip = requestIp(c)
-  if (isRateLimited(`${ip}:${email}`, 12, 10 * 60 * 1000)) return c.json({ success: true })
+  if (isRateLimited(`${ip}:${email}`, 12, 10 * 60 * 1000)) return c.json({ success: true, recorded: false })
   const userAgent = clean(c.req.header('User-Agent'), 500) || 'unknown'
   const reason = clean(body.reason, 240)
   const timestamp = new Date().toISOString()
   const blink = getBlink(c.env as Record<string, string>)
 
-  let auditRecorded = true
   try {
-    // Use service-role SQL for this unauthenticated audit endpoint. The audit_logs
-    // table intentionally denies client writes, while the backend secret may write.
-    await blink.db.sql(
-      'INSERT INTO audit_logs (id, action, resource_type, result, metadata_json) VALUES (?, ?, ?, ?, ?)',
-      [
-        `audit_${crypto.randomUUID()}`,
-        'auth_attempt',
-        'authentication',
-        result,
-        JSON.stringify({ email, ip, userAgent, reason }),
-      ],
-    )
-  } catch (error) {
-    auditRecorded = false
-    console.error('Auth attempt persistence failed', error)
-  }
-  // Audit logging is observability, not an authentication gate. Never turn a
-  // successful or failed sign-in into a 503 when audit storage is unavailable.
-  if (result === 'failure') {
-    const safeReason = reason || 'Authentication failed'
-    try {
-      await blink.notifications.email({
-        to: 'info@eleviqprep.com',
-        subject: 'ELEVIQ authentication failure alert',
-        text: `Authentication failure alert\\nTimestamp: ${timestamp}\\nAttempted email: ${email}\\nIP: ${ip}\\nReason: ${safeReason}`,
-        html: `<h2>Authentication failure alert</h2><p><strong>Timestamp:</strong> ${escapeHtml(timestamp)}</p><p><strong>Attempted email:</strong> ${escapeHtml(email)}</p><p><strong>IP:</strong> ${escapeHtml(ip)}</p><p><strong>Reason:</strong> ${escapeHtml(safeReason)}</p>`,
-      })
-    } catch (error) {
-      console.error('Auth failure alert email failed', error)
+    const userResult = await blink.db.sql('SELECT id FROM users WHERE lower(email) = ? LIMIT 1', [email])
+    const userId = (userResult.rows[0] as { id?: string } | undefined)?.id || null
+    if (result === 'success') {
+      await blink.db.sql('UPDATE account_lockouts SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL, updated_at = ? WHERE email = ?', [timestamp, email])
+      await blink.db.sql(
+        'INSERT INTO audit_logs (id, user_id, action, resource_type, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?)',
+        [`audit_${crypto.randomUUID()}`, userId, 'auth_attempt', 'authentication', result, JSON.stringify({ email, ip, userAgent, reason })],
+      )
+      return c.json({ success: true, recorded: true, locked: false })
     }
+
+    const existingResult = await blink.db.sql('SELECT id, failed_attempts, locked_until FROM account_lockouts WHERE email = ? LIMIT 1', [email])
+    const existing = existingResult.rows[0] as { id?: string; failedAttempts?: string | number; lockedUntil?: string } | undefined
+    const wasLocked = Boolean(existing?.lockedUntil && new Date(existing.lockedUntil).getTime() > Date.now())
+    if (wasLocked) return c.json({ success: true, recorded: true, ...formatLockout(existing!.lockedUntil!) })
+
+    const previousAttempts = Number(existing?.failedAttempts || 0)
+    const attempts = previousAttempts + 1
+    const lockUntil = attempts >= 3 ? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() : null
+    if (existing?.id) {
+      await blink.db.sql('UPDATE account_lockouts SET user_id = ?, failed_attempts = ?, last_failed_at = ?, locked_until = ?, updated_at = ? WHERE id = ?', [userId, attempts, timestamp, lockUntil, timestamp, existing.id])
+    } else {
+      await blink.db.sql('INSERT INTO account_lockouts (id, email, user_id, failed_attempts, last_failed_at, locked_until) VALUES (?, ?, ?, ?, ?, ?)', [`lockout_${crypto.randomUUID()}`, email, userId, attempts, timestamp, lockUntil])
+    }
+
+    await blink.db.sql(
+      'INSERT INTO audit_logs (id, user_id, action, resource_type, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?)',
+      [`audit_${crypto.randomUUID()}`, userId, attempts >= 3 ? 'student_portal_lockout' : 'auth_attempt', attempts >= 3 ? 'security' : 'authentication', result, JSON.stringify({ email, ip, userAgent, reason, failedAttempts: attempts, lockedUntil: lockUntil })],
+    )
+
+    if (studentPortal && attempts >= 3 && lockUntil) {
+      await blink.db.sql('INSERT INTO lockout_events (id, email, user_id, locked_until, attempt_count, notified_at) VALUES (?, ?, ?, ?, ?, ?)', [`lockout_event_${crypto.randomUUID()}`, email, userId, lockUntil, attempts, timestamp])
+      try {
+        await blink.notifications.email({
+          to: 'info@eleviqprep.com',
+          subject: 'ELEVIQ student portal locked out',
+          text: `A student portal was locked after 3 unsuccessful sign-in attempts.\n\nEmail: ${email}\nLocked until: ${lockUntil}\nTime: ${timestamp}\nIP: ${ip}\nReason: ${reason || 'Sign-in failed'}`,
+          html: `<h2>ELEVIQ student portal lockout</h2><p>A student portal was locked after 3 unsuccessful sign-in attempts.</p><p><strong>Email:</strong> ${escapeHtml(email)}</p><p><strong>Locked until:</strong> ${escapeHtml(lockUntil)}</p><p><strong>Time:</strong> ${escapeHtml(timestamp)}</p><p><strong>IP:</strong> ${escapeHtml(ip)}</p><p><strong>Reason:</strong> ${escapeHtml(reason || 'Sign-in failed')}</p>`,
+        })
+      } catch (error) {
+        console.error('Student lockout alert email failed', error)
+      }
+      return c.json({ success: true, recorded: true, ...formatLockout(lockUntil) })
+    }
+    return c.json({ success: true, recorded: true, locked: false, failedAttempts: attempts })
+  } catch (error) {
+    console.error('Auth attempt persistence failed', error)
+    return c.json({ success: true, recorded: false })
   }
-  return c.json({ success: true })
+})
+
+app.post('/api/auth/lockout/check', async (c) => {
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { body = {} }
+  const email = normalizeEmail(body.email)
+  if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com') return c.json({ locked: false })
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const result = await blink.db.sql('SELECT locked_until FROM account_lockouts WHERE email = ? LIMIT 1', [email])
+    const lockedUntil = (result.rows[0] as { lockedUntil?: string } | undefined)?.lockedUntil
+    if (lockedUntil && new Date(lockedUntil).getTime() > Date.now()) return c.json(formatLockout(lockedUntil))
+    if (lockedUntil) await blink.db.sql('UPDATE account_lockouts SET failed_attempts = 0, locked_until = NULL, updated_at = ? WHERE email = ?', [new Date().toISOString(), email])
+    return c.json({ locked: false })
+  } catch (error) {
+    console.error('Lockout status check failed', error)
+    return c.json({ error: 'We could not verify the portal security status.' }, 503)
+  }
+})
+
+app.post('/api/auth/temporary-login', async (c) => {
+  const ip = requestIp(c)
+  if (isRateLimited(`temporary:${ip}`, 10, 10 * 60 * 1000)) return c.json({ error: 'Too many recovery attempts. Please wait and try again.' }, 429)
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { return c.json({ error: 'Recovery details are invalid.' }, 400) }
+  const email = normalizeEmail(body.email)
+  const temporaryPassword = clean(body.password, 200)
+  if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com' || !temporaryPassword) return c.json({ error: 'Recovery details are invalid.' }, 400)
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const result = await blink.db.sql(`SELECT id, user_id, salt, password_hash FROM temporary_passwords WHERE email = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1`, [email, new Date().toISOString()])
+    const row = result.rows[0] as { id?: string; userId?: string; salt?: string; passwordHash?: string } | undefined
+    if (!row?.id || !row.salt || !row.passwordHash || (await hashSecret(temporaryPassword, row.salt)) !== row.passwordHash) return c.json({ error: 'That temporary password is not valid or has expired.' }, 401)
+    const reset = await blink.auth.generatePasswordResetToken(email)
+    const resetToken = (reset as { token?: string }).token
+    if (!resetToken) return c.json({ error: 'We could not start the secure password update.' }, 503)
+    const proof = crypto.randomUUID()
+    const proofHash = await hashSecret(proof, row.salt)
+    await blink.db.sql('UPDATE temporary_passwords SET used_at = ?, reset_proof_hash = ? WHERE id = ?', [new Date().toISOString(), proofHash, row.id])
+    return c.json({ success: true, resetToken, resetProof: proof, email })
+  } catch (error) {
+    console.error('Temporary password login failed', error)
+    return c.json({ error: 'We could not start the secure password update.' }, 503)
+  }
+})
+
+app.post('/api/auth/lockout/complete-reset', async (c) => {
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { return c.json({ error: 'Reset confirmation is invalid.' }, 400) }
+  const email = normalizeEmail(body.email)
+  const proof = clean(body.proof, 120)
+  if (!emailPattern.test(email) || !proof) return c.json({ error: 'Reset confirmation is invalid.' }, 400)
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const result = await blink.db.sql('SELECT id, salt, reset_proof_hash FROM temporary_passwords WHERE email = ? AND used_at IS NOT NULL AND completed_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1', [email, new Date().toISOString()])
+    const row = result.rows[0] as { id?: string; salt?: string; resetProofHash?: string } | undefined
+    if (!row?.id || !row.salt || !row.resetProofHash || (await hashSecret(proof, row.salt)) !== row.resetProofHash) return c.json({ error: 'This secure reset session is invalid or expired.' }, 401)
+    const now = new Date().toISOString()
+    await blink.db.sql('UPDATE temporary_passwords SET completed_at = ? WHERE id = ?', [now, row.id])
+    await blink.db.sql('UPDATE account_lockouts SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL, updated_at = ? WHERE email = ?', [now, email])
+    await blink.db.sql('UPDATE lockout_events SET resolved_at = ?, resolution = ?, resolved_by = (SELECT user_id FROM account_lockouts WHERE email = ? LIMIT 1) WHERE email = ? AND resolved_at IS NULL', [now, 'temporary_password_reset', email, email])
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Lockout reset completion failed', error)
+    return c.json({ error: 'We could not complete the account recovery.' }, 503)
+  }
 })
 
 const isAdminUser = async (blink: ReturnType<typeof getBlink>, userId: string) => {
@@ -545,6 +643,37 @@ const adminOverview = async (c: Context) => {
 app.post('/api/admin/summary', adminOverview)
 app.get('/api/admin/overview', adminOverview)
 
+const requireAdmin = async (c: Context, blink: ReturnType<typeof getBlink>) => {
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return { auth: null, error: c.json({ error: 'A valid bearer token is required.' }, 401) }
+    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return { auth: null, error: c.json({ error: 'Administrator access required.' }, 403) }
+    return { auth, error: null }
+  } catch (error) {
+    console.error('Admin authorization failed', error)
+    return { auth: null, error: c.json({ error: 'Unable to verify administrator access.' }, 403) }
+  }
+}
+
+app.get('/api/admin/lockouts', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireAdmin(c, blink)
+    if (error || !auth) return error
+    const now = new Date().toISOString()
+    const result = await blink.db.sql(`SELECT al.id, al.email, al.user_id, al.failed_attempts, al.locked_until, al.last_failed_at, al.reset_sent_at, al.updated_at, u.display_name
+      FROM account_lockouts al LEFT JOIN users u ON u.id = al.user_id
+      WHERE al.locked_until IS NOT NULL AND al.locked_until > ? ORDER BY al.locked_until ASC LIMIT ?`, [now, 50])
+    const events = await blink.db.sql(`SELECT id, email, user_id, locked_until, attempt_count, notified_at, created_at FROM lockout_events WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT ?`, [50])
+    return c.json({ lockouts: result.rows, events: events.rows })
+  } catch (error) {
+    console.error('Admin lockout read failed', error)
+    return c.json({ error: 'Locked student records are temporarily unavailable.' }, 503)
+  }
+})
+
 app.get('/api/admin/search', async (c) => {
   const blink = getBlink(c.env as Record<string, string>)
   let auth
@@ -638,6 +767,46 @@ app.post('/api/admin/assistant', async (c) => {
   } catch (error) {
     console.error('Admin assistant failed', error)
     return c.json({ error: 'The operations assistant is temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/admin/send-temporary-password', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  let auth
+  try { auth = await blink.auth.verifyToken(c.req.header('Authorization')) } catch { return c.json({ error: 'Unable to verify authorization.' }, 401) }
+  if (!auth.valid || !auth.userId) return c.json({ error: 'A valid bearer token is required.' }, 401)
+  try {
+    const adminUser = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const admin = adminUser.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    if (!admin || admin.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(admin.emailVerified) !== 1 || !(await isAdminUser(blink, auth.userId))) return c.json({ error: 'Administrator access required.' }, 403)
+    const body = await c.req.json<Record<string, unknown>>()
+    const email = normalizeEmail(body.email)
+    if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com') return c.json({ error: 'Enter a valid ELEVIQ student email.' }, 400)
+    const lockoutResult = await blink.db.sql('SELECT user_id, locked_until FROM account_lockouts WHERE email = ? LIMIT 1', [email])
+    const lockout = lockoutResult.rows[0] as { userId?: string; lockedUntil?: string } | undefined
+    if (!lockout?.lockedUntil || new Date(lockout.lockedUntil).getTime() <= Date.now()) return c.json({ error: 'That student does not have an active portal lockout.' }, 400)
+    const userResult = await blink.db.sql('SELECT id, display_name FROM users WHERE lower(email) = ? LIMIT 1', [email])
+    const student = userResult.rows[0] as { id?: string; displayName?: string } | undefined
+    if (!student?.id) return c.json({ error: 'No student account was found for that locked email.' }, 404)
+    const temporaryPassword = randomTemporaryPassword()
+    const salt = crypto.randomUUID()
+    const passwordHash = await hashSecret(temporaryPassword, salt)
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    await blink.db.sql('UPDATE temporary_passwords SET completed_at = ? WHERE email = ? AND completed_at IS NULL', [new Date().toISOString(), email])
+    await blink.db.sql('INSERT INTO temporary_passwords (id, email, user_id, salt, password_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)', [`temporary_password_${crypto.randomUUID()}`, email, student.id, salt, passwordHash, expiresAt, auth.userId])
+    await blink.notifications.email({
+      to: email,
+      subject: 'Your ELEVIQ temporary sign-in password',
+      text: `Your ELEVIQ portal was locked for security. An administrator issued a temporary password that expires in 60 minutes.\n\nTemporary password: ${temporaryPassword}\n\nGo to the ELEVIQ sign-in page, enter your ELEVIQ email and this temporary password, then choose a new password when prompted. Never share this password.`,
+      html: `<h2>ELEVIQ temporary sign-in password</h2><p>Your ELEVIQ portal was locked for security. An administrator issued a temporary password that expires in 60 minutes.</p><p><strong>Temporary password:</strong> <code>${escapeHtml(temporaryPassword)}</code></p><p>Go to the ELEVIQ sign-in page, enter your ELEVIQ email and this temporary password, then choose a new password when prompted.</p><p>Never share this password.</p>`,
+    })
+    const now = new Date().toISOString()
+    await blink.db.sql('UPDATE account_lockouts SET reset_sent_at = ?, reset_sent_by = ?, updated_at = ? WHERE email = ?', [now, auth.userId, now, email])
+    await blink.db.sql('UPDATE lockout_events SET notified_at = COALESCE(notified_at, ?), resolution = ? WHERE email = ? AND resolved_at IS NULL', [now, 'temporary_password_sent', email])
+    return c.json({ success: true, email })
+  } catch (error) {
+    console.error('Temporary password dispatch failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'The temporary password could not be sent.' }, 503)
   }
 })
 

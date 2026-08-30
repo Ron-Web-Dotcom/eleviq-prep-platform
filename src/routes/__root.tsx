@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import {
+  ClientOnly,
   HeadContent,
   Scripts,
   createRootRoute,
@@ -71,7 +72,7 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         {/* MUST be first: sets the theme class before paint so there is no
             flash-of-wrong-theme. Do not move below <HeadContent />. */}
@@ -111,7 +112,9 @@ function RootDocument({ children }: { children: ReactNode }) {
               `src/routes/app/`. Landing pages, marketing sites, content, and games
               stay full-bleed (delete `src/routes/app.tsx` + `src/routes/app/`).
             */}
-            {children}
+            <ClientOnly fallback={<div className="min-h-dvh bg-background" suppressHydrationWarning />}>
+              {children}
+            </ClientOnly>
           </TooltipProvider>
         </QueryClientProvider>
         <Scripts />
