@@ -7,7 +7,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 import { blink } from '@/blink/client'
-import { fetchAdminSummary } from '@/lib/admin-api'
 import { checkEmailLegitimacy, checkStudentLockout, recordStudentAuthAttempt, requestPasswordLink, resendVerificationEmail, verifyTemporaryPassword } from '@/lib/auth-security-api'
 
 export const Route = createFileRoute('/login')({
@@ -164,14 +163,9 @@ function Login() {
             setError('We could not complete the secure sign-in. Please try again.')
             return
           }
-          if (adminIntent) {
-            const summary = await fetchAdminSummary()
-            if (!summary.authorized) {
-              await blink.auth.signOut()
-              setError('This account is not authorized for the admin portal.')
-              return
-            }
-          }
+          // Admin authorization is checked once by RoleGate after the auth state
+          // listener receives the new session. Doing a second permission request
+          // here races the first token persistence on a fresh sign-in.
           await navigate({ to: nextPath })
         } catch {
           let lockoutStatus: { locked: boolean; lockedUntil?: string; message?: string } = { locked: false }

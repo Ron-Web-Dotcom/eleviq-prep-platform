@@ -84,19 +84,29 @@ export async function sendTemporaryPassword(email: string) {
   return body
 }
 
+const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
+
 async function getAdminToken() {
-  if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
-  const token = await blink.auth.getValidToken()
-  if (!token) throw new Error('Your admin session has expired. Please sign in again.')
-  return token
+  let lastError: unknown
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      if (blink.auth.isAuthenticated()) {
+        const token = await blink.auth.getValidToken()
+        if (token) return token
+      }
+    } catch (cause) {
+      lastError = cause
+    }
+    await wait(150 * (attempt + 1))
+  }
+  if (lastError instanceof Error) throw lastError
+  throw new Error('Your admin session has not finished loading. Please try again.')
 }
 
 type FetchAdminOptions = { force?: boolean; range?: string }
 
 export async function fetchAdminOverview(options: FetchAdminOptions = {}): Promise<AdminOverview> {
-  if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
-  const token = await blink.auth.getValidToken()
-  if (!token) throw new Error('Your admin session has expired. Please sign in again.')
+  const token = await getAdminToken()
   const range = options.range || '30d'
   if (!options.force && cachedOverview?.token === token && cachedOverview.range === range) return cachedOverview.request
 
@@ -141,9 +151,7 @@ export async function fetchAdminOverview(options: FetchAdminOptions = {}): Promi
 
 export async function fetchAdminSearch(query: string): Promise<AdminSearchResult[]> {
   if (query.trim().length < 2) return []
-  if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
-  const token = await blink.auth.getValidToken()
-  if (!token) throw new Error('Your admin session has expired. Please sign in again.')
+  const token = await getAdminToken()
   const url = new URL('https://el8e8zlx.backend.blink.new/api/admin/search')
   url.searchParams.set('q', query.trim())
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })

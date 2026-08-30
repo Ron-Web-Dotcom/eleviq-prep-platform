@@ -86,11 +86,19 @@ function RoleContent({ children }: { children: React.ReactNode }) {
         return
       }
 
+      // Do not run a second permission check from the login page. This is the
+      // single admin authorization gate, and it waits for the fresh session
+      // token before calling the protected backend.
       void (async () => {
         try {
+          // A fresh headless sign-in can publish the auth state just before the
+          // access token is readable. The admin API waits briefly for that token;
+          // keep this gate as the single permission check instead of redirecting
+          // or signing out during that handoff.
           const summary = await fetchAdminSummary()
           if (active) setAllowed(summary.authorized === true)
-        } catch {
+        } catch (cause) {
+          console.error('Admin permission check failed', cause)
           if (active) setAllowed(false)
         } finally {
           if (active) setLoading(false)
