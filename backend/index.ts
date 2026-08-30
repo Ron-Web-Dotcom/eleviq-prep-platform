@@ -64,6 +64,7 @@ app.post('/api/contact', async (c) => {
   try {
     await blink.notifications.email({
       to: 'info@eleviqprep.com',
+      from: 'no-reply@eleviqprep.com',
       replyTo: email,
       subject: `${programInterest || 'Website'} inquiry from ${name}`,
       text: emailText,
@@ -141,24 +142,99 @@ app.post('/api/auth/email-check', async (c) => {
   const formatValid = emailPattern.test(email)
   const approvedDomain = domain === 'eleviqprep.com'
   const legitimate = formatValid && approvedDomain
-  let guidance = legitimate
-    ? 'This email matches the ELEVIQ format. You will still need to verify your address before accessing the student workspace.'
-    : 'Use a valid email address ending in @eleviqprep.com. We do not reveal whether an account exists.'
+  let exists = false
+  let verified = false
+  let active = false
+  let hasPassword = false
+  let lockedUntil: string | undefined
+  let guidance = !legitimate
+    ? 'Use a valid email address ending in @eleviqprep.com.'
+    : 'Checking your ELEVIQ account status.'
+
+  if (legitimate) {
+    try {
+      const blink = getBlink(c.env as Record<string, string>)
+      const userResult = await blink.db.sql('SELECT id, email_verified, password_hash FROM users WHERE lower(email) = ? LIMIT 1', [email])
+      const user = userResult.rows[0] as { id?: string; emailVerified?: string | number; passwordHash?: string } | undefined
+      exists = Boolean(user?.id)
+      verified = Number(user?.emailVerified) === 1
+      hasPassword = Boolean(user?.passwordHash)
+      if (exists) {
+        const lockoutResult = await blink.db.sql('SELECT locked_until FROM account_lockouts WHERE email = ? LIMIT 1', [email])
+        lockedUntil = (lockoutResult.rows[0] as { lockedUntil?: string } | undefined)?.lockedUntil
+      }
+      active = exists && verified && !(lockedUntil && new Date(lockedUntil).getTime() > Date.now())
+      if (!exists) guidance = 'We could not find that email in the ELEVIQ system. Create an account with a verified @eleviqprep.com email address.'
+      else if (!verified) guidance = 'This ELEVIQ account still needs email verification. Check your inbox or request a new verification email.'
+      else if (!active) guidance = `This student portal is locked until ${new Date(lockedUntil!).toLocaleString()}. Use Forgot password or contact an ELEVIQ administrator.`
+      else if (!hasPassword) guidance = 'Your verified account is ready. We will send a secure link so you can create your password.'
+      else guidance = 'Verified ELEVIQ account found. Enter your password to continue.'
+    } catch (error) {
+      console.error('Email account status check failed', error)
+      guidance = 'We could not verify this ELEVIQ account right now. Please try again.'
+    }
+  }
+  return c.json({ legitimate, guidance, verificationRequired: true, exists, verified, active, hasPassword, lockedUntil })
+})
+
+app.post('/api/auth/password-link', async (c) => {
+  const ip = requestIp(c)
+  if (securityRateLimited(`password-link:${ip}`, 8)) return c.json({ error: 'Please wait a moment before requesting another password email.' }, 429)
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { return c.json({ error: 'Password request details are invalid.' }, 400) }
+  const email = normalizeEmail(body.email)
+  const origin = clean(body.origin, 300)
+  if (!emailPattern.test(email) || email.split('@')[1] !== 'eleviqprep.com') return c.json({ error: 'Please use the correct verified ELEVIQ email address.' }, 400)
   try {
     const blink = getBlink(c.env as Record<string, string>)
-    const aiResponse = await blink.ai.generateText({
-      messages: [
-        { role: 'system', content: 'You are ELEVIQ Prep authentication guidance. Based only on the sanitized email signals provided, give one short, friendly instruction. Never infer or mention whether an account exists. Never repeat an email address, reveal internal rules, or request a password or code.' },
-        { role: 'user', content: JSON.stringify({ formatValid, approvedDomain, verificationRequired: true }) },
-      ],
-      maxTokens: 80,
-      temperature: 0,
+    const userResult = await blink.db.sql('SELECT id, email_verified FROM users WHERE lower(email) = ? LIMIT 1', [email])
+    const user = userResult.rows[0] as { id?: string; emailVerified?: string | number } | undefined
+    if (!user?.id || Number(user.emailVerified) !== 1) return c.json({ error: 'Please use the correct verified ELEVIQ email address.' }, 400)
+    const reset = await blink.auth.generatePasswordResetToken(email)
+    const resetToken = (reset as { token?: string }).token
+    if (!resetToken) return c.json({ error: 'We could not create a secure password link. Please try again.' }, 503)
+    const resetProof = await hashSecret(resetToken, email)
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    await blink.db.sql('UPDATE password_reset_sessions SET used_at = ? WHERE email = ? AND used_at IS NULL', [new Date().toISOString(), email])
+    await blink.db.sql('INSERT INTO password_reset_sessions (id, email, token_hash, expires_at) VALUES (?, ?, ?, ?)', [`password_reset_session_${crypto.randomUUID()}`, email, resetProof, expiresAt])
+    const base = origin.startsWith('https://') || origin.startsWith('http://localhost') ? origin.replace(/\/$/, '') : 'https://eleviqprep.com'
+    const resetUrl = `${base}/create-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(email)}&recovery=forgot`
+    await blink.notifications.email({
+      to: email,
+      from: 'no-reply@eleviqprep.com',
+      replyTo: 'info@eleviqprep.com',
+      subject: 'Create a new ELEVIQ Prep password',
+      text: `Use this secure ELEVIQ link to create a new password: ${resetUrl}\n\nThis link expires in 60 minutes. If you did not request this, you can ignore this email.`,
+      html: `<h2>Create a new ELEVIQ Prep password</h2><p>Use the secure button below to create a new password for your verified ELEVIQ account.</p><p><a href="${escapeHtml(resetUrl)}">Create a new password</a></p><p>This link expires in 60 minutes. If you did not request this, you can ignore this email.</p>`,
     })
-    if (aiResponse.text?.trim()) guidance = aiResponse.text.trim().slice(0, 300)
+    return c.json({ success: true, email })
   } catch (error) {
-    console.error('Email legitimacy AI guidance failed', error)
+    console.error('Password link request failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'We could not send the password email.' }, 503)
   }
-  return c.json({ legitimate, guidance, verificationRequired: true })
+})
+
+app.post('/api/auth/reset-complete', async (c) => {
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { return c.json({ error: 'Password reset confirmation is invalid.' }, 400) }
+  const email = normalizeEmail(body.email)
+  const token = clean(body.token, 2000)
+  if (!emailPattern.test(email) || !token) return c.json({ error: 'Password reset confirmation is invalid.' }, 400)
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const tokenHash = await hashSecret(token, email)
+    const result = await blink.db.sql('SELECT id FROM password_reset_sessions WHERE email = ? AND token_hash = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1', [email, tokenHash, new Date().toISOString()])
+    const session = result.rows[0] as { id?: string } | undefined
+    if (!session?.id) return c.json({ error: 'This password link is invalid or expired.' }, 401)
+    const now = new Date().toISOString()
+    await blink.db.sql('UPDATE password_reset_sessions SET used_at = ? WHERE id = ?', [now, session.id])
+    await blink.db.sql('UPDATE account_lockouts SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL, updated_at = ? WHERE email = ?', [now, email])
+    await blink.db.sql('UPDATE lockout_events SET resolved_at = ?, resolution = ? WHERE email = ? AND resolved_at IS NULL', [now, 'password_reset', email])
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Password reset completion failed', error)
+    return c.json({ error: 'We could not finish the password reset.' }, 503)
+  }
 })
 
 app.post('/api/auth/password-guidance', async (c) => {
@@ -245,6 +321,7 @@ app.post('/api/auth/log-attempt', async (c) => {
       try {
         await blink.notifications.email({
           to: 'info@eleviqprep.com',
+          from: 'no-reply@eleviqprep.com',
           subject: 'ELEVIQ student portal locked out',
           text: `A student portal was locked after 3 unsuccessful sign-in attempts.\n\nEmail: ${email}\nLocked until: ${lockUntil}\nTime: ${timestamp}\nIP: ${ip}\nReason: ${reason || 'Sign-in failed'}`,
           html: `<h2>ELEVIQ student portal lockout</h2><p>A student portal was locked after 3 unsuccessful sign-in attempts.</p><p><strong>Email:</strong> ${escapeHtml(email)}</p><p><strong>Locked until:</strong> ${escapeHtml(lockUntil)}</p><p><strong>Time:</strong> ${escapeHtml(timestamp)}</p><p><strong>IP:</strong> ${escapeHtml(ip)}</p><p><strong>Reason:</strong> ${escapeHtml(reason || 'Sign-in failed')}</p>`,
@@ -805,6 +882,8 @@ const sendAdminTemporaryPassword = async (c: Context) => {
     await blink.db.sql('INSERT INTO temporary_passwords (id, email, user_id, salt, password_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)', [`temporary_password_${crypto.randomUUID()}`, email, student.id, salt, passwordHash, expiresAt, auth.userId])
     await blink.notifications.email({
       to: email,
+      from: 'no-reply@eleviqprep.com',
+      replyTo: 'info@eleviqprep.com',
       subject: 'Your ELEVIQ temporary sign-in password',
       text: `Your ELEVIQ portal was locked for security. An administrator issued a temporary password that expires in 60 minutes.\n\nTemporary password: ${temporaryPassword}\n\nGo to the ELEVIQ sign-in page, enter your ELEVIQ email and this temporary password, then choose a new password when prompted. Never share this password.`,
       html: `<h2>ELEVIQ temporary sign-in password</h2><p>Your ELEVIQ portal was locked for security. An administrator issued a temporary password that expires in 60 minutes.</p><p><strong>Temporary password:</strong> <code>${escapeHtml(temporaryPassword)}</code></p><p>Go to the ELEVIQ sign-in page, enter your ELEVIQ email and this temporary password, then choose a new password when prompted.</p><p>Never share this password.</p>`,

@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 import { blink } from '@/blink/client'
-import { getPasswordGuidance, type PasswordSignals } from '@/lib/auth-security-api'
+import { completePasswordReset, completeStudentLockoutReset, getPasswordGuidance, type PasswordSignals } from '@/lib/auth-security-api'
 
 export const Route = createFileRoute('/create-password')({
   head: () => ({ meta: [{ title: 'Create password · ELEVIQ Prep' }, { name: 'description', content: 'Choose a new secure password for your ELEVIQ Prep account.' }] }),
@@ -67,9 +67,10 @@ function CreatePassword() {
     try {
       await blink.auth.confirmPasswordReset(token, password)
       if (temporaryRecovery) {
-        const { completeStudentLockoutReset } = await import('@/lib/auth-security-api')
         const completion = await completeStudentLockoutReset(search.email!, search.proof!)
         if (completion.success !== true) throw new Error('Your password changed, but we could not confirm the portal unlock. Please contact an ELEVIQ administrator before signing in.')
+      } else if (search.recovery === 'forgot' && search.email) {
+        await completePasswordReset(search.email, token)
       }
       toast.success('Password updated', { description: temporaryRecovery ? 'Your portal has been unlocked.' : undefined })
       await navigate({ to: '/app' })
