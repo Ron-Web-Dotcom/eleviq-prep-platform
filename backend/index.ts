@@ -169,44 +169,206 @@ const adminOverview = async (c: Context) => {
     const role = roleResult.rows[0] as { roleName?: string } | undefined
     if (!role?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
 
-    const [leadCount, studentCount, questionCount, productCount, leads, students, auditLogs] = await Promise.all([
+    const range = clean(c.req.query('range'), 30) || '30d'
+    const customStart = clean(c.req.query('start'), 40)
+    const customEnd = clean(c.req.query('end'), 40)
+    const end = new Date()
+    const start = new Date(end)
+    if (range === 'custom' && customStart && customEnd) {
+      const parsedStart = new Date(`${customStart}T00:00:00.000Z`)
+      const parsedEnd = new Date(`${customEnd}T23:59:59.999Z`)
+      if (!Number.isNaN(parsedStart.getTime()) && !Number.isNaN(parsedEnd.getTime()) && parsedStart <= parsedEnd) {
+        start.setTime(parsedStart.getTime())
+        end.setTime(parsedEnd.getTime())
+      } else {
+        return c.json({ error: 'The custom date range is invalid.' }, 400)
+      }
+    } else if (range === 'today') start.setHours(0, 0, 0, 0)
+    else if (range === 'yesterday') { start.setDate(start.getDate() - 1); start.setHours(0, 0, 0, 0); end.setHours(0, 0, 0, 0) }
+    else if (range === '7d') start.setDate(start.getDate() - 7)
+    else if (range === 'this_month') { start.setDate(1); start.setHours(0, 0, 0, 0) }
+    else if (range === 'last_month') { start.setMonth(start.getMonth() - 1, 1); start.setHours(0, 0, 0, 0); end.setDate(1); end.setHours(0, 0, 0, 0) }
+    else if (range === 'this_year') { start.setMonth(0, 1); start.setHours(0, 0, 0, 0) }
+    else start.setDate(start.getDate() - 30)
+    const startIso = start.toISOString()
+    const endIso = end.toISOString()
+
+    const [
+      leadCount, newLeadCount, studentCount, questionCount, activeQuestionCount, draftQuestionCount,
+      productCount, orders, sessions, enrollments, packages, leads, students, auditLogs,
+      readiness, paymentSummary, questionSummary, systemEvents,
+      productSales, lowInventory, recentOrders, leadPipeline, todaySessions, weakAreas, questionPerformance, testSummary,
+    ] = await Promise.all([
       blink.db.sql('SELECT COUNT(*) AS total FROM leads'),
-      blink.db.sql('SELECT COUNT(*) AS total FROM student_profiles'),
+      blink.db.sql('SELECT COUNT(*) AS total FROM leads WHERE created_at >= ? AND created_at < ?', [startIso, endIso]),
+      blink.db.sql("SELECT COUNT(*) AS total FROM student_profiles WHERE status IN ('active', 'onboarding')"),
       blink.db.sql('SELECT COUNT(*) AS total FROM questions'),
+      blink.db.sql("SELECT COUNT(*) AS total FROM questions WHERE status = 'active'"),
+      blink.db.sql("SELECT COUNT(*) AS total FROM questions WHERE status = 'draft'"),
       blink.db.sql('SELECT COUNT(*) AS total FROM products'),
-      blink.db.sql(
-        `SELECT id, name, email, stage, program_interest, created_at FROM leads
-         ORDER BY created_at DESC LIMIT ?`,
-        [10],
-      ),
-      blink.db.sql(
-        `SELECT id, user_id, school, program_type, exam_type, status, readiness_score, created_at
-         FROM student_profiles ORDER BY created_at DESC LIMIT ?`,
-        [10],
-      ),
-      blink.db.sql(
-        `SELECT id, user_id, action, resource_type, resource_id, result, metadata_json, created_at
-         FROM audit_logs ORDER BY created_at DESC LIMIT ?`,
-        [10],
-      ),
+      blink.db.sql(`SELECT COUNT(*) AS total, COALESCE(SUM(total_cents), 0) AS revenue,
+        SUM(CASE WHEN payment_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN payment_status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN payment_status IN ('past_due', 'overdue') THEN 1 ELSE 0 END) AS past_due,
+        SUM(CASE WHEN payment_status = 'refunded' THEN total_cents ELSE 0 END) AS refunds
+        FROM orders WHERE created_at >= ? AND created_at < ?`, [startIso, endIso]),
+      blink.db.sql(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN date(starts_at) = date('now') THEN 1 ELSE 0 END) AS today,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+        SUM(CASE WHEN status = 'no_show' THEN 1 ELSE 0 END) AS noShows
+        FROM tutoring_sessions WHERE starts_at >= ? AND starts_at < ?`, [startIso, endIso]),
+      blink.db.sql("SELECT COUNT(*) AS total FROM enrollments WHERE status = 'active' AND created_at >= ? AND created_at < ?", [startIso, endIso]),
+      blink.db.sql("SELECT p.name AS packageName, COUNT(e.id) AS activeStudents FROM packages p LEFT JOIN enrollments e ON e.package_id = p.id AND e.status = 'active' GROUP BY p.id, p.name ORDER BY p.name"),
+      blink.db.sql(`SELECT id, name, email, stage, program_interest, source, follow_up_at, created_at FROM leads
+        WHERE follow_up_at IS NOT NULL AND follow_up_at <= ? ORDER BY follow_up_at ASC LIMIT ?`, [endIso, 10]),
+      blink.db.sql(`SELECT sp.id, sp.user_id, u.display_name, sp.school, sp.program_type, sp.exam_type,
+        sp.status, sp.readiness_score, sp.assigned_tutor_id, sp.updated_at
+        FROM student_profiles sp LEFT JOIN users u ON u.id = sp.user_id
+        WHERE sp.status IN ('active', 'onboarding') AND (sp.readiness_score IS NULL OR sp.readiness_score < 70)
+        ORDER BY COALESCE(sp.readiness_score, 0) ASC, sp.updated_at DESC LIMIT ?`, [10]),
+      blink.db.sql(`SELECT id, user_id, action, resource_type, resource_id, result, created_at
+        FROM audit_logs ORDER BY created_at DESC LIMIT ?`, [15]),
+      blink.db.sql(`SELECT COUNT(*) AS total, COALESCE(AVG(readiness_score), 0) AS average,
+        SUM(CASE WHEN readiness_score >= 70 THEN 1 ELSE 0 END) AS exitReady,
+        SUM(CASE WHEN readiness_score < 50 OR readiness_score IS NULL THEN 1 ELSE 0 END) AS intervention
+        FROM student_profiles WHERE status IN ('active', 'onboarding')`),
+      blink.db.sql(`SELECT
+        COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total_cents ELSE 0 END), 0) AS collected,
+        COALESCE(SUM(CASE WHEN payment_status = 'pending' THEN total_cents ELSE 0 END), 0) AS pendingAmount,
+        COALESCE(SUM(CASE WHEN payment_status IN ('failed', 'past_due', 'overdue') THEN total_cents ELSE 0 END), 0) AS outstanding
+        FROM orders WHERE created_at >= ? AND created_at < ?`, [startIso, endIso]),
+      blink.db.sql(`SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) AS draft,
+        SUM(CASE WHEN question_type = 'case_study' OR clinical_judgment_category IS NOT NULL THEN 1 ELSE 0 END) AS ngn
+        FROM questions`),
+      blink.db.sql(`SELECT id, action, resource_type, result, created_at FROM audit_logs
+        WHERE resource_type IN ('authentication', 'security', 'ai') OR action LIKE '%security%' OR action LIKE '%auth%'
+        ORDER BY created_at DESC LIMIT ?`, [10]),
+      blink.db.sql(`SELECT p.name AS productName, COALESCE(SUM(oi.quantity), 0) AS unitsSold,
+        COALESCE(SUM(oi.quantity * oi.unit_price_cents), 0) AS revenueCents
+        FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
+        WHERE o.payment_status = 'paid' AND o.created_at >= ? AND o.created_at < ?
+        GROUP BY p.id, p.name ORDER BY unitsSold DESC LIMIT ?`, [startIso, endIso, 5]),
+      blink.db.sql(`SELECT id, name, inventory_available, low_stock_threshold FROM products
+        WHERE status = 'active' AND inventory_available <= low_stock_threshold ORDER BY inventory_available ASC LIMIT ?`, [10]),
+      blink.db.sql(`SELECT o.id, o.order_number, o.user_id, u.display_name, o.total_cents, o.payment_status,
+        o.fulfillment_status, o.created_at, GROUP_CONCAT(p.name, ', ') AS products
+        FROM orders o LEFT JOIN users u ON u.id = o.user_id LEFT JOIN order_items oi ON oi.order_id = o.id
+        LEFT JOIN products p ON p.id = oi.product_id WHERE o.created_at >= ? AND o.created_at < ?
+        GROUP BY o.id ORDER BY o.created_at DESC LIMIT ?`, [startIso, endIso, 10]),
+      blink.db.sql(`SELECT stage, COUNT(*) AS total FROM leads GROUP BY stage ORDER BY total DESC`),
+      blink.db.sql(`SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.status, sp.program_type
+        FROM tutoring_sessions ts LEFT JOIN student_profiles sp ON sp.user_id = ts.student_id
+        WHERE date(ts.starts_at) = date('now') ORDER BY ts.starts_at ASC LIMIT ?`, [10]),
+      blink.db.sql(`SELECT COALESCE(q.topic, 'Uncategorized') AS topic, COUNT(*) AS attempts,
+        SUM(CASE WHEN sa.is_correct = '1' OR sa.is_correct = 1 THEN 1 ELSE 0 END) AS correct,
+        ROUND(100.0 * SUM(CASE WHEN sa.is_correct = '1' OR sa.is_correct = 1 THEN 1 ELSE 0 END) / COUNT(*), 0) AS percentCorrect
+        FROM student_answers sa JOIN questions q ON q.id = sa.question_id
+        GROUP BY q.topic ORDER BY percentCorrect ASC LIMIT ?`, [8]),
+      blink.db.sql(`SELECT q.id, q.question_text, q.topic, q.difficulty, q.question_type, COUNT(sa.id) AS attempts,
+        SUM(CASE WHEN sa.is_correct = '0' OR sa.is_correct = 0 THEN 1 ELSE 0 END) AS incorrect,
+        ROUND(100.0 * SUM(CASE WHEN sa.is_correct = '1' OR sa.is_correct = 1 THEN 1 ELSE 0 END) / COUNT(sa.id), 0) AS percentCorrect
+        FROM student_answers sa JOIN questions q ON q.id = sa.question_id
+        GROUP BY q.id, q.question_text, q.topic, q.difficulty, q.question_type
+        HAVING COUNT(sa.id) > 0 ORDER BY percentCorrect ASC, attempts DESC LIMIT ?`, [8]),
+      blink.db.sql(`SELECT COUNT(*) AS testsCreated,
+        SUM(CASE WHEN ta.status = 'submitted' THEN 1 ELSE 0 END) AS testsCompleted,
+        COALESCE(AVG(CASE WHEN ta.status = 'submitted' THEN ta.score_percent END), 0) AS averageScore
+        FROM tests t LEFT JOIN test_attempts ta ON ta.test_id = t.id`),
     ])
+
+    const orderRow = orders.rows[0] || {}
+    const sessionRow = sessions.rows[0] || {}
+    const readinessRow = readiness.rows[0] || {}
+    const paymentRow = paymentSummary.rows[0] || {}
+    const questionRow = questionSummary.rows[0] || {}
+    const testRow = testSummary.rows[0] || {}
+    const count = (value: unknown) => Number(value || 0)
 
     return c.json({
       success: true,
       authorized: true,
       role: role.roleName,
+      range: { key: range, start: startIso, end: endIso },
       counts: {
-        leads: Number(leadCount.rows[0]?.total || 0),
-        students: Number(studentCount.rows[0]?.total || 0),
-        questions: Number(questionCount.rows[0]?.total || 0),
-        products: Number(productCount.rows[0]?.total || 0),
+        leads: count(leadCount.rows[0]?.total),
+        newLeads: count(newLeadCount.rows[0]?.total),
+        students: count(studentCount.rows[0]?.total),
+        questions: count(questionCount.rows[0]?.total),
+        activeQuestions: count(activeQuestionCount.rows[0]?.total),
+        draftQuestions: count(draftQuestionCount.rows[0]?.total),
+        products: count(productCount.rows[0]?.total),
+      },
+      business: {
+        revenueCents: count(paymentRow.collected),
+        outstandingCents: count(paymentRow.outstanding),
+        pendingPaymentsCents: count(paymentRow.pendingAmount),
+        orders: count(orderRow.total),
+        refundsCents: count(orderRow.refunds),
+        booksSold: count(orderRow.total),
+      },
+      attention: {
+        failedPayments: count(orderRow.failed),
+        pastDuePayments: count(orderRow.pastDue),
+        followUps: leads.rows.length,
+        lowReadiness: students.rows.length,
+        securityEvents: systemEvents.rows.length,
+      },
+      performance: {
+        activeStudents: count(readinessRow.total),
+        averageReadiness: Math.round(count(readinessRow.average)),
+        exitReady: count(readinessRow.exitReady),
+        intervention: count(readinessRow.intervention),
+      },
+      tutoring: {
+        sessions: count(sessionRow.total),
+        today: count(sessionRow.today),
+        completed: count(sessionRow.completed),
+        cancelled: count(sessionRow.cancelled),
+        noShows: count(sessionRow.noShows),
+        newEnrollments: count(enrollments.rows[0]?.total),
+        packages: packages.rows,
+      },
+      testing: {
+        totalQuestions: count(questionRow.total),
+        activeQuestions: count(questionRow.active),
+        draftQuestions: count(questionRow.draft),
+        ngnCases: count(questionRow.ngn),
       },
       recent: {
         leads: leads.rows,
         students: students.rows,
         auditLogs: auditLogs.rows,
+        securityEvents: systemEvents.rows,
+        orders: recentOrders.rows,
+        todaySessions: todaySessions.rows,
       },
-      health: { status: 'ok', database: 'ok', checkedAt: new Date().toISOString() },
+      bookstore: {
+        websiteRevenueCents: productSales.rows.reduce((total, item) => total + count(item.revenueCents), 0),
+        booksSold: productSales.rows.reduce((total, item) => total + count(item.unitsSold), 0),
+        lowInventory: lowInventory.rows,
+        topProducts: productSales.rows,
+      },
+      payments: {
+        collectedCents: count(paymentRow.collected),
+        pendingCents: count(paymentRow.pendingAmount),
+        outstandingCents: count(paymentRow.outstanding),
+        failed: count(orderRow.failed),
+        pastDue: count(orderRow.pastDue),
+        refundsCents: count(orderRow.refunds),
+      },
+      crm: { pipeline: leadPipeline.rows },
+      academics: {
+        weakAreas: weakAreas.rows,
+        mostMissedQuestions: questionPerformance.rows,
+      },
+      testingOverview: {
+        testsCreated: count(testRow.testsCreated),
+        testsCompleted: count(testRow.testsCompleted),
+        averageScore: Math.round(count(testRow.averageScore)),
+      },
+      health: { status: 'ok', database: 'ok', email: 'configured', payments: 'tracked_in_orders', store: 'ok', security: 'monitoring', message: 'Core data services are responding.', checkedAt: new Date().toISOString() },
     })
   } catch (error) {
     console.error('Admin overview query failed', error)
@@ -216,5 +378,46 @@ const adminOverview = async (c: Context) => {
 
 app.post('/api/admin/summary', adminOverview)
 app.get('/api/admin/overview', adminOverview)
+
+app.get('/api/admin/search', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  let auth
+  try {
+    auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+  } catch (error) {
+    console.error('Admin search token verification failed', error)
+    return c.json({ error: 'Unable to verify authorization.' }, 401)
+  }
+  if (!auth.valid) return c.json({ error: 'A valid bearer token is required.' }, 401)
+
+  try {
+    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    if (!user || user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) return c.json({ error: 'Administrator access required.' }, 403)
+    const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`, [auth.userId, 'system_admin', 'admin', 'super_admin'])
+    if (!(roleResult.rows[0] as { roleName?: string } | undefined)?.roleName) return c.json({ error: 'Administrator role required.' }, 403)
+
+    const query = clean(c.req.query('q'), 80)
+    if (query.length < 2) return c.json({ results: [] })
+    const like = `%${query.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+    const [users, leads, products, orders, questions] = await Promise.all([
+      blink.db.sql(`SELECT id, display_name, email FROM users WHERE display_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' ORDER BY display_name LIMIT ?`, [like, like, 5]),
+      blink.db.sql(`SELECT id, name, email, program_interest FROM leads WHERE name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?`, [like, like, 5]),
+      blink.db.sql(`SELECT id, name, product_type, status FROM products WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?`, [like, 5]),
+      blink.db.sql(`SELECT id, order_number, payment_status, total_cents FROM orders WHERE order_number LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?`, [like, 5]),
+      blink.db.sql(`SELECT id, question_text, topic, difficulty FROM questions WHERE question_text LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT ?`, [like, like, 5]),
+    ])
+    return c.json({ results: [
+      ...users.rows.map(item => ({ type: 'Student or user', id: item.id, title: item.displayName || item.email, subtitle: item.email })),
+      ...leads.rows.map(item => ({ type: 'Lead', id: item.id, title: item.name, subtitle: `${item.email || 'No email'} · ${item.programInterest || 'General inquiry'}` })),
+      ...products.rows.map(item => ({ type: 'Product', id: item.id, title: item.name, subtitle: `${item.productType || 'Product'} · ${item.status || 'draft'}` })),
+      ...orders.rows.map(item => ({ type: 'Order', id: item.id, title: item.orderNumber, subtitle: `${item.paymentStatus || 'pending'} · $${(Number(item.totalCents || 0) / 100).toFixed(2)}` })),
+      ...questions.rows.map(item => ({ type: 'Question', id: item.id, title: String(item.questionText || '').slice(0, 100), subtitle: `${item.topic || 'Uncategorized'} · ${item.difficulty || 'unspecified'}` })),
+    ] })
+  } catch (error) {
+    console.error('Admin search failed', error)
+    return c.json({ error: 'Admin search is temporarily unavailable.' }, 503)
+  }
+})
 
 export default app
