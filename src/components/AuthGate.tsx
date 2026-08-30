@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { blink } from '@/blink/client'
+import { SessionTimeout } from '@/components/SessionTimeout'
 import { fetchAdminSummary } from '@/lib/admin-api'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 
@@ -49,7 +50,7 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
   }, [loading, redirecting, signedIn])
 
   if (loading || redirecting) return <LoadingState label={redirecting ? 'Taking you to secure sign in…' : 'Checking your ELEVIQ account…'} />
-  return <>{children}</>
+  return <SessionTimeout sessionKey="student">{children}</SessionTimeout>
 }
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
@@ -116,5 +117,5 @@ function RoleContent({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-  return <>{children}</>
+  return <SessionTimeout sessionKey="admin">{children}</SessionTimeout>
 }
