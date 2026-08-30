@@ -94,7 +94,7 @@ function AdminConsole() {
       if (showLoading) setLoading(true)
       else setRefreshing(true)
       try {
-        const data = await fetchAdminOverview({ force: true, range })
+        const data = await fetchAdminOverview({ range })
         if (activeRequest) {
           setOverview(data)
           setLastUpdated(new Date())

@@ -64,7 +64,7 @@ export const Route = createRootRoute({
     ],
     links: [
       { rel: 'stylesheet', href: indexCss },
-      { rel: 'icon', type: 'image/png', href: '/favicon.png' },
+      { rel: 'icon', type: 'image/png', href: '/favicon.png?v=1788128157717' },
     ],
   }),
   shellComponent: RootDocument,

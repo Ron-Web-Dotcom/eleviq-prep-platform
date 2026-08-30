@@ -63,6 +63,7 @@ export interface AdminOverview {
   health?: { status?: string; database?: string; email?: string; payments?: string; store?: string; security?: string; message?: string; checkedAt?: string }
 }
 
+const adminAccessUrl = 'https://el8e8zlx.backend.blink.new/api/admin/access'
 const adminOverviewUrl = 'https://el8e8zlx.backend.blink.new/api/admin/overview'
 const adminLockoutsUrl = 'https://el8e8zlx.backend.blink.new/api/admin/lockouts'
 const adminTemporaryPasswordUrl = 'https://el8e8zlx.backend.blink.new/api/admin/send-temporary-password'
@@ -88,7 +89,7 @@ const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(
 
 async function getAdminToken() {
   let lastError: unknown
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       if (blink.auth.isAuthenticated()) {
         const token = await blink.auth.getValidToken()
@@ -97,10 +98,28 @@ async function getAdminToken() {
     } catch (cause) {
       lastError = cause
     }
-    await wait(150 * (attempt + 1))
+    await wait(250 * (attempt + 1))
   }
   if (lastError instanceof Error) throw lastError
   throw new Error('Your admin session has not finished loading. Please try again.')
+}
+
+export async function checkAdminAccess(): Promise<{ authorized: boolean; role?: string }> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const token = await getAdminToken()
+      const response = await fetch(adminAccessUrl, { headers: { Authorization: `Bearer ${token}` } })
+      const body = await response.json().catch(() => ({})) as { authorized?: boolean; role?: string; error?: string }
+      if (response.ok) return { authorized: body.authorized === true, role: body.role }
+      if (response.status !== 401 && response.status !== 503) throw new Error(body.error || `Admin access check failed (${response.status})`)
+      lastError = new Error(body.error || `Admin access check failed (${response.status})`)
+    } catch (cause) {
+      lastError = cause
+    }
+    await wait(500 * (attempt + 1))
+  }
+  throw lastError instanceof Error ? lastError : new Error('Admin access could not be verified. Please try again.')
 }
 
 type FetchAdminOptions = { force?: boolean; range?: string }

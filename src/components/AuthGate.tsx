@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { blink } from '@/blink/client'
 import { SessionTimeout } from '@/components/SessionTimeout'
-import { fetchAdminSummary } from '@/lib/admin-api'
+import { checkAdminAccess } from '@/lib/admin-api'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 
 function LoadingState({ label }: { label: string }) {
@@ -72,43 +72,43 @@ export function RoleGate({ children }: { children: React.ReactNode }) {
 function RoleContent({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [allowed, setAllowed] = useState(false)
+  const checkedUserId = useRef('')
 
   useEffect(() => {
     let active = true
-    const unsubscribe = blink.auth.onAuthStateChanged((state) => {
-      if (state.isLoading) return
-      if (!state.user) {
-        if (active) {
+    let unsubscribe: (() => void) | undefined
+    const start = async () => {
+      // Wait for the SDK's initial auth hydration before subscribing. This
+      // prevents a transient empty state from being treated as a denial.
+      await new Promise<void>(resolve => window.setTimeout(resolve, 300))
+      if (!active) return
+      unsubscribe = blink.auth.onAuthStateChanged((state) => {
+        if (state.isLoading || !active) return
+        if (!state.user) {
           setAllowed(false)
           setLoading(false)
+          return
         }
-        // Removed redirect here to prevent premature denial before auth settles
-        return
-      }
-
-      // Do not run a second permission check from the login page. This is the
-      // single admin authorization gate, and it waits for the fresh session
-      // token before calling the protected backend.
-      void (async () => {
-        try {
-          // A fresh headless sign-in can publish the auth state just before the
-          // access token is readable. The admin API waits briefly for that token;
-          // keep this gate as the single permission check instead of redirecting
-          // or signing out during that handoff.
-          const summary = await fetchAdminSummary()
-          if (active) setAllowed(summary.authorized === true)
-        } catch (cause) {
-          console.error('Admin permission check failed', cause)
-          if (active) setAllowed(false)
-        } finally {
-          if (active) setLoading(false)
-        }
-      })()
-    })
+        if (checkedUserId.current === state.user.id) return
+        checkedUserId.current = state.user.id
+        void (async () => {
+          try {
+            const access = await checkAdminAccess()
+            if (active) setAllowed(access.authorized)
+          } catch (cause) {
+            console.error('Admin permission check failed', cause)
+            if (active) setAllowed(false)
+          } finally {
+            if (active) setLoading(false)
+          }
+        })()
+      })
+    }
+    void start()
 
     return () => {
       active = false
-      unsubscribe()
+      unsubscribe?.()
     }
   }, [])
 

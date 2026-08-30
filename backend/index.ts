@@ -409,6 +409,34 @@ const isAdminUser = async (blink: ReturnType<typeof getBlink>, userId: string) =
   return Boolean((roleResult.rows[0] as { roleName?: string } | undefined)?.roleName)
 }
 
+// Keep the authorization handshake lightweight. The admin dashboard loads a
+// larger operational overview after this check succeeds; permission checks
+// should never need to wait for all dashboard metrics and recent records.
+app.get('/api/admin/access', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ authorized: false, error: 'A valid bearer token is required.' }, 401)
+    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    const verifiedEmail = user?.email?.trim().toLowerCase()
+    if (!user || verifiedEmail?.split('@')[1] !== 'eleviqprep.com' || Number(user.emailVerified) !== 1) {
+      return c.json({ authorized: false, error: 'A verified ELEVIQ administrator account is required.' }, 403)
+    }
+    const roleResult = await blink.db.sql(
+      `SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = ? AND r.name IN (?, ?, ?) LIMIT 1`,
+      [auth.userId, 'system_admin', 'admin', 'super_admin'],
+    )
+    const role = (roleResult.rows[0] as { roleName?: string } | undefined)?.roleName
+    if (!role) return c.json({ authorized: false, error: 'Administrator role required.' }, 403)
+    return c.json({ authorized: true, role })
+  } catch (error) {
+    console.error('Admin access check failed', error)
+    return c.json({ authorized: false, error: 'Unable to verify administrator access.' }, 503)
+  }
+})
+
 const chatAuth = async (c: Context) => {
   const blink = getBlink(c.env as Record<string, string>)
   const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
