@@ -937,4 +937,125 @@ const sendAdminTemporaryPassword = async (c: Context) => {
 app.post('/api/admin/send-temporary-password', sendAdminTemporaryPassword)
 app.post('/api/auth/temporary-password', sendAdminTemporaryPassword)
 
+const parseJsonArray = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) return value
+  if (typeof value !== 'string') return []
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+}
+
+const normalizeQuestionPayload = (body: Record<string, unknown>) => {
+  const questionText = clean(body.questionText, 5000)
+  const rawChoices = Array.isArray(body.choices) ? body.choices : []
+  const choices = rawChoices.map((choice, index) => {
+    const item = choice && typeof choice === 'object' ? choice as Record<string, unknown> : {}
+    return { id: clean(item.id, 80) || `choice_${String.fromCharCode(65 + index)}`, text: clean(item.text, 1000) }
+  }).filter(choice => choice.text)
+  const correctAnswerIds = Array.isArray(body.correctAnswerIds) ? body.correctAnswerIds.map(value => clean(value, 80)).filter(Boolean) : []
+  const validIds = new Set(choices.map(choice => choice.id))
+  if (!questionText) throw new Error('Question text is required.')
+  if (choices.length < 2) throw new Error('At least two answer choices are required.')
+  if (!correctAnswerIds.length || correctAnswerIds.some(id => !validIds.has(id))) throw new Error('Choose at least one valid correct answer.')
+  if (body.questionType === 'multiple_choice' && correctAnswerIds.length > 1) throw new Error('One-best-answer questions can have only one correct answer.')
+  if (body.status === 'active' && !clean(body.rationale, 6000)) throw new Error('Add an instructor rationale before publishing this question.')
+  return {
+    questionText, choices, correctAnswerIds,
+    questionType: body.questionType === 'multiple_select' ? 'multiple_select' : 'multiple_choice',
+    rationale: clean(body.rationale, 6000), topic: clean(body.topic, 160), subtopic: clean(body.subtopic, 160),
+    difficulty: clean(body.difficulty, 40) || 'medium', clinicalJudgmentCategory: clean(body.clinicalJudgmentCategory, 160),
+    status: body.status === 'active' ? 'active' : 'draft', programId: clean(body.programId, 120),
+  }
+}
+
+const saveAdminQuestion = async (c: Context, updating: boolean) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireAdmin(c, blink)
+    if (error || !auth) return error
+    const body = await c.req.json<Record<string, unknown>>()
+    const question = normalizeQuestionPayload(body)
+    const id = updating ? clean(c.req.param('id'), 120) : `question_${crypto.randomUUID()}`
+    if (!id) return c.json({ error: 'Question id is required.' }, 400)
+    const now = new Date().toISOString()
+    if (updating) {
+      const existing = await blink.db.sql('SELECT id FROM questions WHERE id = ? LIMIT 1', [id])
+      if (!existing.rows[0]) return c.json({ error: 'Question not found.' }, 404)
+      await blink.db.sql(`UPDATE questions SET program_id = ?, question_text = ?, question_type = ?, choices_json = ?, correct_answers_json = ?, rationale = ?, topic = ?, subtopic = ?, difficulty = ?, clinical_judgment_category = ?, status = ?, updated_at = ? WHERE id = ?`, [question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, question.status, now, id])
+    } else {
+      await blink.db.sql(`INSERT INTO questions (id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, tags_json, status, author_source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, question.programId || null, question.questionText, question.questionType, JSON.stringify(question.choices), JSON.stringify(question.correctAnswerIds), question.rationale || null, question.topic || null, question.subtopic || null, question.difficulty, question.clinicalJudgmentCategory || null, '[]', question.status, 'instructor_workspace', now])
+    }
+    await blink.db.sql('INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)', [`audit_${crypto.randomUUID()}`, auth.userId, updating ? 'question_updated' : 'question_created', 'question', id, 'success', JSON.stringify({ status: question.status, questionType: question.questionType })])
+    const saved = await blink.db.sql('SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, status, updated_at FROM questions WHERE id = ? LIMIT 1', [id])
+    const row = saved.rows[0]
+    return c.json({ question: { id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType, choices: parseJsonArray(row.choicesJson), correctAnswerIds: parseJsonArray(row.correctAnswersJson), rationale: row.rationale || '', topic: row.topic, subtopic: row.subtopic, difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory, status: row.status, updatedAt: row.updatedAt } }, updating ? 200 : 201)
+  } catch (error) {
+    console.error('Admin question save failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'The question could not be saved.' }, 400)
+  }
+}
+
+app.get('/api/admin/questions', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireAdmin(c, blink)
+    if (error || !auth) return error
+    const query = clean(c.req.query('q'), 120)
+    const like = `%${query.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+    const result = await blink.db.sql(`SELECT id, program_id, question_text, question_type, choices_json, correct_answers_json, rationale, topic, subtopic, difficulty, clinical_judgment_category, status, updated_at
+      FROM questions WHERE (? = '' OR question_text LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`, [query, like, like, 100])
+    return c.json({ questions: result.rows.map((row) => ({
+      id: row.id, programId: row.programId, questionText: row.questionText, questionType: row.questionType,
+      choices: parseJsonArray(row.choicesJson), correctAnswerIds: parseJsonArray(row.correctAnswersJson), rationale: row.rationale || '',
+      topic: row.topic, subtopic: row.subtopic, difficulty: row.difficulty, clinicalJudgmentCategory: row.clinicalJudgmentCategory,
+      status: row.status, updatedAt: row.updatedAt,
+    })) })
+  } catch (error) {
+    console.error('Admin question list failed', error)
+    return c.json({ error: 'The question bank is temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/admin/questions', async (c) => saveAdminQuestion(c, false))
+app.put('/api/admin/questions/:id', async (c) => saveAdminQuestion(c, true))
+
+app.post('/api/admin/questions/ai', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireAdmin(c, blink)
+    if (error || !auth) return error
+    const body = await c.req.json<Record<string, unknown>>()
+    const mode = body.mode === 'choices' || body.mode === 'rationale' ? body.mode : 'question'
+    const questionText = clean(body.questionText, 3000)
+    const topic = clean(body.topic, 160) || 'nursing and allied-health exam preparation'
+    const difficulty = clean(body.difficulty, 40) || 'medium'
+    const type = body.questionType === 'multiple_select' ? 'multiple_select' : 'multiple_choice'
+    const context = JSON.stringify({ questionText, topic, difficulty, questionType: type, choices: body.choices, correctAnswerIds: body.correctAnswerIds, rationale: clean(body.rationale, 4000) })
+    const system = 'You are the ELEVIQ Prep instructor assistant. Create accurate, exam-style nursing and allied-health learning content for Phlebotomy, CNA, and LPN learners. Be concise, clinically responsible, and explain reasoning in plain language. Do not provide personalized medical advice. Treat every response as an instructor draft that requires human review before publication.'
+    const prompt = mode === 'question'
+      ? `Draft one original ${type === 'multiple_select' ? 'select-all-that-apply' : 'multiple-choice'} question for the topic "${topic}" at ${difficulty} difficulty. Return a clear question stem plus metadata. Do not include answer choices yet.\nContext: ${context}`
+      : mode === 'choices'
+        ? `Create four distinct answer choices for this question. Include exactly the correct answer id(s), using ids choice_A, choice_B, choice_C, and choice_D. For multiple_choice return exactly one correct id; for multiple_select return two or more only when clinically appropriate.\nContext: ${context}`
+        : `Write a rigorous instructor rationale for this question. State why the correct answer is best, address the key distractor reasoning when useful, and keep it educational rather than personalized medical advice.\nContext: ${context}`
+    const schema = mode === 'question' ? {
+      type: 'object', properties: { questionText: { type: 'string' }, topic: { type: 'string' }, subtopic: { type: 'string' }, difficulty: { type: 'string' }, clinicalJudgmentCategory: { type: 'string' } }, required: ['questionText', 'topic', 'difficulty'],
+    } : mode === 'choices' ? {
+      type: 'object', properties: { choices: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } }, correctAnswerIds: { type: 'array', items: { type: 'string' } } }, required: ['choices', 'correctAnswerIds'],
+    } : {
+      type: 'object', properties: { rationale: { type: 'string' } }, required: ['rationale'],
+    }
+    const response = await blink.ai.generateObject({ prompt: `${system}\n\n${prompt}`, schema })
+    const result = response.object as Record<string, unknown>
+    if (mode === 'choices') {
+      const choices = Array.isArray(result.choices) ? result.choices : []
+      const normalized = choices.map((choice, index) => { const item = choice as Record<string, unknown>; return { id: `choice_${String.fromCharCode(65 + index)}`, text: clean(item.text, 500) } }).filter(item => item.text)
+      const validIds = new Set(normalized.map(choice => choice.id))
+      result.choices = normalized
+      result.correctAnswerIds = Array.isArray(result.correctAnswerIds) ? result.correctAnswerIds.map(String).filter(id => validIds.has(id)) : []
+    }
+    return c.json({ result })
+  } catch (error) {
+    console.error('Question AI assistance failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'Question AI assistance is temporarily unavailable.' }, 503)
+  }
+})
+
 export default app
