@@ -204,8 +204,14 @@ app.post('/api/auth/log-attempt', async (c) => {
   const blink = getBlink(c.env as Record<string, string>)
 
   try {
+    const verifiedAuth = result === 'success' ? await blink.auth.verifyToken(c.req.header('Authorization')) : null
+    if (result === 'success' && (!verifiedAuth?.valid || !verifiedAuth.userId)) return c.json({ success: true, recorded: false })
+
     const userResult = await blink.db.sql('SELECT id FROM users WHERE lower(email) = ? LIMIT 1', [email])
     const userId = (userResult.rows[0] as { id?: string } | undefined)?.id || null
+    if (!userId) return c.json({ success: true, recorded: false, locked: false })
+    if (result === 'success' && verifiedAuth?.userId !== userId) return c.json({ success: true, recorded: false })
+
     if (result === 'success') {
       await blink.db.sql('UPDATE account_lockouts SET failed_attempts = 0, locked_until = NULL, last_failed_at = NULL, updated_at = ? WHERE email = ?', [timestamp, email])
       await blink.db.sql(
@@ -657,7 +663,7 @@ const requireAdmin = async (c: Context, blink: ReturnType<typeof getBlink>) => {
   }
 }
 
-app.get('/api/admin/lockouts', async (c) => {
+const readAdminLockouts = async (c: Context) => {
   const blink = getBlink(c.env as Record<string, string>)
   try {
     const { auth, error } = await requireAdmin(c, blink)
@@ -672,7 +678,10 @@ app.get('/api/admin/lockouts', async (c) => {
     console.error('Admin lockout read failed', error)
     return c.json({ error: 'Locked student records are temporarily unavailable.' }, 503)
   }
-})
+}
+
+app.get('/api/admin/lockouts', readAdminLockouts)
+app.post('/api/auth/lockout/admin-list', readAdminLockouts)
 
 app.get('/api/admin/search', async (c) => {
   const blink = getBlink(c.env as Record<string, string>)
@@ -770,7 +779,7 @@ app.post('/api/admin/assistant', async (c) => {
   }
 })
 
-app.post('/api/admin/send-temporary-password', async (c) => {
+const sendAdminTemporaryPassword = async (c: Context) => {
   const blink = getBlink(c.env as Record<string, string>)
   let auth
   try { auth = await blink.auth.verifyToken(c.req.header('Authorization')) } catch { return c.json({ error: 'Unable to verify authorization.' }, 401) }
@@ -808,6 +817,9 @@ app.post('/api/admin/send-temporary-password', async (c) => {
     console.error('Temporary password dispatch failed', error)
     return c.json({ error: error instanceof Error ? error.message : 'The temporary password could not be sent.' }, 503)
   }
-})
+}
+
+app.post('/api/admin/send-temporary-password', sendAdminTemporaryPassword)
+app.post('/api/auth/temporary-password', sendAdminTemporaryPassword)
 
 export default app

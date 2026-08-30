@@ -68,7 +68,8 @@ function CreatePassword() {
       await blink.auth.confirmPasswordReset(token, password)
       if (temporaryRecovery) {
         const { completeStudentLockoutReset } = await import('@/lib/auth-security-api')
-        await completeStudentLockoutReset(search.email!, search.proof!)
+        const completion = await completeStudentLockoutReset(search.email!, search.proof!)
+        if (completion.success !== true) throw new Error('Your password changed, but we could not confirm the portal unlock. Please contact an ELEVIQ administrator before signing in.')
       }
       toast.success('Password updated', { description: temporaryRecovery ? 'Your portal has been unlocked.' : undefined })
       await navigate({ to: '/app' })

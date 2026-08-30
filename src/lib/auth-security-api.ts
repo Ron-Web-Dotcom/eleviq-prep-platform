@@ -39,7 +39,8 @@ export async function checkStudentLockout(email: string): Promise<LockoutStatus>
 }
 
 export async function recordStudentAuthAttempt(email: string, result: 'success' | 'failure', reason: string) {
-  return await postSecurityCheck('/log-attempt', { email, result, reason, studentPortal: true }) as LockoutStatus & { success?: boolean; recorded?: boolean }
+  const token = result === 'success' ? await blink.auth.getValidToken() : undefined
+  return await postSecurityCheck('/log-attempt', { email, result, reason, studentPortal: true }, token || undefined) as LockoutStatus & { success?: boolean; recorded?: boolean }
 }
 
 export async function verifyTemporaryPassword(email: string, password: string): Promise<{ resetToken: string; resetProof: string; email: string }> {
@@ -52,18 +53,48 @@ export async function completeStudentLockoutReset(email: string, proof: string) 
   return await postSecurityCheck('/lockout/complete-reset', { email, proof }) as { success?: boolean }
 }
 
+export type AdminLockoutRecord = {
+  id?: string
+  email?: string
+  userId?: string
+  displayName?: string
+  failedAttempts?: number
+  lockedUntil?: string
+  resetSentAt?: string
+  createdAt?: string
+}
+
+export async function fetchAdminLockoutAlerts(): Promise<{ lockouts: AdminLockoutRecord[]; events: AdminLockoutRecord[] }> {
+  const token = await getAdminToken()
+  return await postSecurityCheck('/lockout/admin-list', {}, token) as { lockouts: AdminLockoutRecord[]; events: AdminLockoutRecord[] }
+}
+
+export async function issueTemporaryPassword(email: string): Promise<{ success?: boolean; email?: string }> {
+  const token = await getAdminToken()
+  return await postSecurityCheck('/temporary-password', { email }, token) as { success?: boolean; email?: string }
+}
+
+async function getAdminToken() {
+  if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
+  const token = await blink.auth.getValidToken()
+  if (!token) throw new Error('Your admin session has expired. Please sign in again.')
+  return token
+}
+
 export async function getPasswordGuidance(signals: PasswordSignals): Promise<string> {
   const result = await postSecurityCheck('/password-guidance', { signals }) as { guidance?: string }
   return result.guidance || 'Use a long, unique password that meets every requirement below.'
 }
 
-async function postSecurityCheck(path: string, body: unknown) {
+async function postSecurityCheck(path: string, body: unknown, token?: string) {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), 10000)
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
     const response = await fetch(`${securityApiUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     })

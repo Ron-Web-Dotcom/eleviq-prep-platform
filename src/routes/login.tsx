@@ -178,7 +178,7 @@ function Login() {
               // Keep the normal authentication error if the security service is unavailable.
             }
           }
-          const temporaryPasswordAttempt = !adminIntent && password.length > 0
+          const temporaryPasswordAttempt = !adminIntent && (lockoutStatus.locked || lockout.locked) && password.length > 0
           if (temporaryPasswordAttempt) {
             try {
               const recovery = await verifyTemporaryPassword(normalized, password)
