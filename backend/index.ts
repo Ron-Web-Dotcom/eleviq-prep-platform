@@ -90,6 +90,90 @@ const requestIp = (c: Context) => {
   return clean(c.req.header('X-Forwarded-For')?.split(',')[0], 80) || 'unknown'
 }
 
+const securityCheckTimes = new Map<string, number[]>()
+
+const securityRateLimited = (key: string) => {
+  const now = Date.now()
+  const recent = (securityCheckTimes.get(key) || []).filter((time) => now - time < 60 * 1000)
+  recent.push(now)
+  securityCheckTimes.set(key, recent)
+  return recent.length > 20
+}
+
+const passwordSignals = (value: unknown) => {
+  if (!value || typeof value !== 'object') return null
+  const input = value as Record<string, unknown>
+  const length = Number(input.length)
+  if (!Number.isFinite(length) || length < 0 || length > 512) return null
+  return {
+    length: Math.floor(length),
+    hasUppercase: input.hasUppercase === true,
+    hasLowercase: input.hasLowercase === true,
+    hasNumber: input.hasNumber === true,
+    hasSpecial: input.hasSpecial === true,
+    hasWhitespace: input.hasWhitespace === true,
+    hasRepeatedCharacters: input.hasRepeatedCharacters === true,
+  }
+}
+
+app.post('/api/auth/email-check', async (c) => {
+  const ip = requestIp(c)
+  if (securityRateLimited(`email:${ip}`)) return c.json({ legitimate: false, guidance: 'Please wait a moment and try again.', verificationRequired: true }, 429)
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { body = {} }
+  const email = normalizeEmail(body.email)
+  const domain = email.includes('@') ? email.split('@').pop() || '' : ''
+  const formatValid = emailPattern.test(email)
+  const approvedDomain = domain === 'eleviqprep.com'
+  const legitimate = formatValid && approvedDomain
+  let guidance = legitimate
+    ? 'This email matches the ELEVIQ format. You will still need to verify your address before accessing the student workspace.'
+    : 'Use a valid email address ending in @eleviqprep.com. We do not reveal whether an account exists.'
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const aiResponse = await blink.ai.generateText({
+      messages: [
+        { role: 'system', content: 'You are ELEVIQ Prep authentication guidance. Based only on the sanitized email signals provided, give one short, friendly instruction. Never infer or mention whether an account exists. Never repeat an email address, reveal internal rules, or request a password or code.' },
+        { role: 'user', content: JSON.stringify({ formatValid, approvedDomain, verificationRequired: true }) },
+      ],
+      maxTokens: 80,
+      temperature: 0,
+    })
+    if (aiResponse.text?.trim()) guidance = aiResponse.text.trim().slice(0, 300)
+  } catch (error) {
+    console.error('Email legitimacy AI guidance failed', error)
+  }
+  return c.json({ legitimate, guidance, verificationRequired: true })
+})
+
+app.post('/api/auth/password-guidance', async (c) => {
+  const ip = requestIp(c)
+  if (securityRateLimited(`password:${ip}`)) return c.json({ error: 'Please wait a moment and try again.' }, 429)
+  let body: Record<string, unknown>
+  try { body = await c.req.json<Record<string, unknown>>() } catch { return c.json({ error: 'Password strength signals are invalid.' }, 400) }
+  const signals = passwordSignals(body.signals)
+  if (!signals) return c.json({ error: 'Password strength signals are invalid.' }, 400)
+  const localRequirementsMet = signals.length >= 8 && signals.hasUppercase && signals.hasLowercase && signals.hasNumber && signals.hasSpecial && !signals.hasWhitespace
+  let guidance = localRequirementsMet
+    ? 'This password meets the visible ELEVIQ requirements. Make sure it is unique and not reused elsewhere.'
+    : 'Use at least 8 characters with uppercase, lowercase, a number, and a special character. Avoid spaces.'
+  try {
+    const blink = getBlink(c.env as Record<string, string>)
+    const aiResponse = await blink.ai.generateText({
+      messages: [
+        { role: 'system', content: 'You are ELEVIQ Prep password guidance. Use only the sanitized password-strength signals supplied by the app. Give one short, encouraging instruction. Never ask for, reconstruct, repeat, or infer the password. Never claim a password is unbreakable.' },
+        { role: 'user', content: JSON.stringify(signals) },
+      ],
+      maxTokens: 80,
+      temperature: 0,
+    })
+    if (aiResponse.text?.trim()) guidance = aiResponse.text.trim().slice(0, 300)
+  } catch (error) {
+    console.error('Password guidance AI request failed', error)
+  }
+  return c.json({ guidance })
+})
+
 app.post('/api/auth/log-attempt', async (c) => {
   const body = await c.req.json<Record<string, unknown>>()
   const email = normalizeEmail(body.email)

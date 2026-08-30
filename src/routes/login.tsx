@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 import { blink } from '@/blink/client'
 import { fetchAdminSummary } from '@/lib/admin-api'
+import { checkEmailLegitimacy } from '@/lib/auth-security-api'
 
 export const Route = createFileRoute('/login')({
   head: () => ({
@@ -46,6 +47,7 @@ function Login() {
   const [error, setError] = useState('')
   const [emailConfirmed, setEmailConfirmed] = useState(false)
   const [authNotice, setAuthNotice] = useState('')
+  const [emailCheck, setEmailCheck] = useState('')
   const access = mode === 'access'
   const nextPath = safeNext(search.next)
   const adminIntent = nextPath === '/admin'
@@ -56,6 +58,16 @@ function Login() {
     if (!normalized) return setError('Enter your email address.')
     if (normalized.split('@')[1] !== 'eleviqprep.com') return setError(adminIntent ? 'Use your verified @eleviqprep.com username.' : 'ELEVIQ accounts must use an @eleviqprep.com email address.')
     if (mode === 'signin' && !emailConfirmed && !adminIntent) {
+      setBusy(true)
+      try {
+        const result = await checkEmailLegitimacy(normalized)
+        setEmailCheck(result.guidance)
+        if (!result.legitimate) return setError(result.guidance)
+      } catch (error) {
+        return setError(error instanceof Error ? error.message : 'We could not verify the email format. Please try again.')
+      } finally {
+        setBusy(false)
+      }
       setEmail(normalized)
       setEmailConfirmed(true)
       return
@@ -130,7 +142,7 @@ function Login() {
         <div className="text-center"><div className="mx-auto mb-5 flex h-[30px] w-[30px] items-center justify-center overflow-hidden rounded-[9px] bg-[#f4f6f9]"><img src="/brand/eleviq-logo.png" alt="ELEVIQ Prep" className="h-full w-full object-contain" /></div><h1 className="text-[16px] font-semibold leading-[1.35] tracking-[-0.01em] text-[#f4f6f9]">{title}</h1><p className="mt-2 text-[12px] text-[#a2a2a4]">{subtitle}</p></div>
         <form onSubmit={submit} className="mt-7 space-y-2.5">
           {mode === 'signin' && !emailConfirmed && !adminIntent && <div className="mb-4 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.03em] text-[#737373]"><span className="h-px flex-1 bg-[#202020]" /><span>Or continue with email</span><span className="h-px flex-1 bg-[#202020]" /></div>}
-          <div><Label htmlFor="email" className="mb-2 block text-[11px] font-medium text-[#c1c6d2]">{adminIntent ? 'Username' : 'Email address'}</Label><div className="relative"><Mail className="absolute left-3 top-[11px] h-3.5 w-3.5 text-[#737373]" /><Input id="email" type="email" value={email} onChange={e => { setEmail(e.target.value); setEmailConfirmed(false) }} className="h-[35px] rounded-[9px] border-[#202020] bg-[#0b0b0b] pl-9 text-[11px] text-[#f4f6f9] placeholder:text-[#737373] focus-visible:ring-1 focus-visible:ring-[#4e4e4e]" /></div>{adminIntent && <p className="mt-2 text-[10px] leading-4 text-[#737373]">Use your verified @eleviqprep.com username.</p>}</div>
+          <div><Label htmlFor="email" className="mb-2 block text-[11px] font-medium text-[#c1c6d2]">{adminIntent ? 'Username' : 'Email address'}</Label><div className="relative"><Mail className="absolute left-3 top-[11px] h-3.5 w-3.5 text-[#737373]" /><Input id="email" type="email" value={email} onChange={e => { setEmail(e.target.value); setEmailConfirmed(false); setEmailCheck('') }} className="h-[35px] rounded-[9px] border-[#202020] bg-[#0b0b0b] pl-9 text-[11px] text-[#f4f6f9] placeholder:text-[#737373] focus-visible:ring-1 focus-visible:ring-[#4e4e4e]" /></div>{adminIntent && <p className="mt-2 text-[10px] leading-4 text-[#737373]">Use your verified @eleviqprep.com username.</p>}{emailCheck && <p className="mt-2 text-[10px] leading-4 text-[#a2a2a4]" role="status">{emailCheck}</p>}</div>
           {mode === 'signin' && (emailConfirmed || adminIntent) && <div className="pt-1"><div className="flex items-center justify-between"><Label htmlFor="password" className="text-[11px] font-medium text-[#c1c6d2]">Password</Label>{!adminIntent && <button type="button" onClick={() => setMode('forgot')} className="text-[10px] text-[#c1c6d2] underline-offset-4 hover:text-[#f4f6f9] hover:underline">Forgot password?</button>}</div><div className="relative mt-2"><LockKeyhole className="absolute left-3 top-[11px] h-3.5 w-3.5 text-[#737373]" /><Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} className="h-[35px] rounded-[9px] border-[#202020] bg-[#0b0b0b] pl-9 text-[11px] text-[#f4f6f9] focus-visible:ring-1 focus-visible:ring-[#4e4e4e]" required /></div>{!adminIntent && <button type="button" onClick={() => { setEmailConfirmed(false); setPassword('') }} className="mt-2 text-[10px] text-[#737373] underline-offset-4 hover:text-[#f4f6f9] hover:underline">Use a different email</button>}</div>}
           {mode === 'forgot' && <p className="pb-1 text-[11px] leading-5 text-[#a2a2a4]">We’ll email a secure link so you can choose a new password.</p>}{error && <p role="alert" className="rounded-[7px] border border-[#4e4e4e] bg-[#202020] p-2.5 text-[11px] leading-4 text-[#f4f6f9]">{error}</p>}
           <Button disabled={busy} className="h-[35px] w-full rounded-[9px] bg-[#202020] px-3 text-[11px] font-medium text-[#c1c6d2] shadow-none hover:bg-[#2b2b2b] hover:text-[#f4f6f9]">{busy ? 'Please wait…' : mode === 'forgot' ? 'Send reset link' : access ? 'Email secure access link' : emailConfirmed || adminIntent ? 'Sign in' : 'Continue with Email'} {!busy && <ArrowRight className="h-3.5 w-3.5" />}</Button>
