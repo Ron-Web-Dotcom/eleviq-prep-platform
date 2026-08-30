@@ -637,8 +637,12 @@ const adminOverview = async (c: Context) => {
         LEFT JOIN products p ON p.id = oi.product_id WHERE o.created_at >= ? AND o.created_at < ?
         GROUP BY o.id ORDER BY o.created_at DESC LIMIT ?`, [startIso, endIso, 10]),
       blink.db.sql(`SELECT stage, COUNT(*) AS total FROM leads GROUP BY stage ORDER BY total DESC`),
-      blink.db.sql(`SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.status, sp.program_type
-        FROM tutoring_sessions ts LEFT JOIN student_profiles sp ON sp.user_id = ts.student_id
+      blink.db.sql(`SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.status, sp.program_type,
+        su.display_name AS student_name, tu.display_name AS tutor_name
+        FROM tutoring_sessions ts
+        LEFT JOIN student_profiles sp ON sp.user_id = ts.student_id
+        LEFT JOIN users su ON su.id = ts.student_id
+        LEFT JOIN users tu ON tu.id = ts.tutor_id
         WHERE date(ts.starts_at) = date('now') ORDER BY ts.starts_at ASC LIMIT ?`, [10]),
       blink.db.sql(`SELECT COALESCE(q.topic, 'Uncategorized') AS topic, COUNT(*) AS attempts,
         SUM(CASE WHEN sa.is_correct = '1' OR sa.is_correct = 1 THEN 1 ELSE 0 END) AS correct,

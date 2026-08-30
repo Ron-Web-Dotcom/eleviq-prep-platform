@@ -58,7 +58,7 @@ export interface AdminOverview {
     auditLogs?: Array<{ id?: string; action?: string; userId?: string; resourceType?: string; resourceId?: string; result?: string; createdAt?: string }>
     securityEvents?: Array<{ id?: string; action?: string; resourceType?: string; result?: string; createdAt?: string }>
     orders?: Array<{ id?: string; orderNumber?: string; displayName?: string; totalCents?: string | number; paymentStatus?: string; fulfillmentStatus?: string; products?: string; createdAt?: string }>
-    todaySessions?: Array<{ id?: string; studentId?: string; tutorId?: string; startsAt?: string; endsAt?: string; status?: string; programType?: string }>
+    todaySessions?: Array<{ id?: string; studentId?: string; tutorId?: string; startsAt?: string; endsAt?: string; status?: string; programType?: string; studentName?: string; tutorName?: string }>
   }
   health?: { status?: string; database?: string; email?: string; payments?: string; store?: string; security?: string; message?: string; checkedAt?: string }
 }
