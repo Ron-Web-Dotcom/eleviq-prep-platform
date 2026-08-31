@@ -1,15 +1,20 @@
 import { blink } from '@/blink/client'
 
 const assistantUrl = 'https://el8e8zlx.backend.blink.new/api/admin/assistant'
+const ASSISTANT_TIMEOUT_MS = 12000
+let lastAssistantRequest = { prompt: '', timestamp: 0 }
 
 export async function askAdminAssistant(question: string, range = '30d'): Promise<string> {
   const prompt = question.trim()
   if (!prompt) throw new Error('Ask the operations assistant a question first.')
+  const now = Date.now()
+  if (lastAssistantRequest.prompt === prompt && now - lastAssistantRequest.timestamp < 1200) return 'That request was already sent. Please wait for the current readout.'
+  lastAssistantRequest = { prompt, timestamp: now }
   if (!blink.auth.isAuthenticated()) throw new Error('Your admin session has expired. Please sign in again.')
   const token = await blink.auth.getValidToken()
   if (!token) throw new Error('Your admin session has expired. Please sign in again.')
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 20000)
+  const timeout = window.setTimeout(() => controller.abort(), ASSISTANT_TIMEOUT_MS)
   try {
     const response = await fetch(assistantUrl, {
       method: 'POST',
