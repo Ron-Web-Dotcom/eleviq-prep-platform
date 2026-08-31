@@ -43,7 +43,7 @@ interface NavItemDef {
 // e.g. `src/routes/app/items.tsx` → { href: '/app/items', label: 'Items' }.
 const NAV_ITEMS: NavItemDef[] = [
   { href: '/app', icon: <LayoutDashboard className="h-4 w-4" />, label: 'Dashboard', active: true },
-  { href: '/test-mode', icon: <ClipboardCheck className="h-4 w-4" />, label: 'Test Mode' },
+  { href: '/app/test-mode', icon: <ClipboardCheck className="h-4 w-4" />, label: 'Test Mode' },
 ]
 
 function NavItem({ item, collapsed }: { item: NavItemDef; collapsed: boolean }) {

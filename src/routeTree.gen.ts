@@ -17,6 +17,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as TestModeRouteImport } from './routes/test-mode'
+import { Route as TutorRouteImport } from './routes/tutor'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppTestModeRouteImport } from './routes/app/test-mode'
 
@@ -60,6 +61,11 @@ const TestModeRoute = TestModeRouteImport.update({
   path: '/test-mode',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TutorRoute = TutorRouteImport.update({
+  id: '/tutor',
+  path: '/tutor',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -80,6 +86,7 @@ export interface FileRoutesByFullPath {
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
+  '/tutor': typeof TutorRoute
   '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
@@ -91,6 +98,7 @@ export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
+  '/tutor': typeof TutorRoute
   '/app/test-mode': typeof AppTestModeRoute
   '/app': typeof AppIndexRoute
 }
@@ -104,6 +112,7 @@ export interface FileRoutesById {
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
+  '/tutor': typeof TutorRoute
   '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
@@ -118,6 +127,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/terms'
     | '/test-mode'
+    | '/tutor'
     | '/app/test-mode'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/terms'
     | '/test-mode'
+    | '/tutor'
     | '/app/test-mode'
     | '/app'
   id:
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/terms'
     | '/test-mode'
+    | '/tutor'
     | '/app/test-mode'
     | '/app/'
   fileRoutesById: FileRoutesById
@@ -154,6 +166,7 @@ export interface RootRouteChildren {
   PrivacyRoute: typeof PrivacyRoute
   TermsRoute: typeof TermsRoute
   TestModeRoute: typeof TestModeRoute
+  TutorRoute: typeof TutorRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -214,6 +227,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TestModeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tutor': {
+      id: '/tutor'
+      path: '/tutor'
+      fullPath: '/tutor'
+      preLoaderRoute: typeof TutorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/app/': {
       id: '/app/'
       path: '/'
@@ -252,6 +272,7 @@ const rootRouteChildren: RootRouteChildren = {
   PrivacyRoute: PrivacyRoute,
   TermsRoute: TermsRoute,
   TestModeRoute: TestModeRoute,
+  TutorRoute: TutorRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

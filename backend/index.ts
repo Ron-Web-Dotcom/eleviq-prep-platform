@@ -409,6 +409,12 @@ const isAdminUser = async (blink: ReturnType<typeof getBlink>, userId: string) =
   return Boolean((roleResult.rows[0] as { roleName?: string } | undefined)?.roleName)
 }
 
+const isTutorUser = async (blink: ReturnType<typeof getBlink>, userId: string) => {
+  if (await isAdminUser(blink, userId)) return true
+  const roleResult = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name = ? LIMIT 1`, [userId, 'tutor'])
+  return Boolean((roleResult.rows[0] as { roleName?: string } | undefined)?.roleName)
+}
+
 const isVerifiedAdmin = async (blink: ReturnType<typeof getBlink>, userId: string) => {
   const userResult = await blink.db.sql('SELECT email_verified FROM users WHERE id = ? LIMIT 1', [userId])
   const user = userResult.rows[0] as { emailVerified?: string | number } | undefined
@@ -762,6 +768,27 @@ const adminOverview = async (c: Context) => {
 app.post('/api/admin/summary', adminOverview)
 app.get('/api/admin/overview', adminOverview)
 
+const requireTutorAccess = async (c: Context, blink: ReturnType<typeof getBlink>) => {
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return { auth: null, error: c.json({ error: 'A valid tutor session is required.' }, 401) }
+    const userResult = await blink.db.sql('SELECT email, email_verified FROM users WHERE id = ? LIMIT 1', [auth.userId])
+    const user = userResult.rows[0] as { email?: string; emailVerified?: string | number } | undefined
+    if (!user || Number(user.emailVerified) !== 1 || !(await isTutorUser(blink, auth.userId))) return { auth: null, error: c.json({ error: 'Verified tutor access is required.' }, 403) }
+    return { auth, error: null }
+  } catch (error) {
+    console.error('Tutor authorization failed', error)
+    return { auth: null, error: c.json({ error: 'Unable to verify tutor access.' }, 403) }
+  }
+}
+
+app.get('/api/tutor/access', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  const { auth, error } = await requireTutorAccess(c, blink)
+  if (error || !auth) return error
+  return c.json({ authorized: true })
+})
+
 const requireAdmin = async (c: Context, blink: ReturnType<typeof getBlink>) => {
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
@@ -1047,7 +1074,13 @@ app.post('/api/admin/questions/ai', async (c) => {
         ? `Create four distinct answer choices for this question. Include exactly the correct answer id(s), using ids choice_A, choice_B, choice_C, and choice_D. For multiple_choice return exactly one correct id; for multiple_select return two or more only when clinically appropriate.\nContext: ${context}`
         : `Write a rigorous instructor rationale for this question. State why the correct answer is best, address the key distractor reasoning when useful, and keep it educational rather than personalized medical advice.\nContext: ${context}`
     const schema = mode === 'question' ? {
-      type: 'object', properties: { questionText: { type: 'string' }, topic: { type: 'string' }, subtopic: { type: 'string' }, difficulty: { type: 'string' }, clinicalJudgmentCategory: { type: 'string' }, scenario: { type: 'object', properties: { history: { type: 'string' }, assessment: { type: 'string' }, vitals: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, labs: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, medications: { type: 'array', items: { type: 'string' } }, timeline: { type: 'array', items: { type: 'object', properties: { time: { type: 'string' }, event: { type: 'string' } } } } }, required: [] }, interaction: { type: 'object', properties: { condition: { type: 'string' }, actions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } }, monitoring: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } } }, required: [] } }, required: ['questionText', 'topic', 'difficulty'],
+      type: 'object',
+      properties: {
+        questionText: { type: 'string' }, topic: { type: 'string' }, subtopic: { type: 'string' }, difficulty: { type: 'string' }, clinicalJudgmentCategory: { type: 'string' },
+        scenario: { type: 'object', properties: { history: { type: 'string' }, assessment: { type: 'string' }, vitals: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, labs: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, value: { type: 'string' } } } }, medications: { type: 'array', items: { type: 'string' } }, timeline: { type: 'array', items: { type: 'object', properties: { time: { type: 'string' }, event: { type: 'string' } } } } } },
+        interaction: { type: 'object', properties: { condition: { type: 'string' }, actions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } }, monitoring: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } } } },
+      },
+      required: ['questionText', 'topic', 'difficulty'],
     } : mode === 'choices' ? {
       type: 'object', properties: { choices: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } }, correctAnswerIds: { type: 'array', items: { type: 'string' } } }, required: ['choices', 'correctAnswerIds'],
     } : {
@@ -1115,6 +1148,112 @@ app.post('/api/test-mode/submit', async (c) => {
   } catch (error) {
     console.error('Test submission failed', error)
     return c.json({ error: error instanceof Error ? error.message : 'Test submission failed.' }, 503)
+  }
+})
+
+const mapScheduledSession = (row: Record<string, unknown>) => ({
+  id: row.id,
+  studentId: row.studentId,
+  tutorId: row.tutorId,
+  studentName: row.studentName,
+  studentEmail: row.studentEmail,
+  tutorName: row.tutorName,
+  tutorEmail: row.tutorEmail,
+  programType: row.programType,
+  startsAt: row.startsAt,
+  endsAt: row.endsAt,
+  timezone: row.timezone,
+  status: row.status,
+  googleEventId: row.googleEventId,
+  calendarSyncStatus: row.calendarSyncStatus,
+})
+
+app.get('/api/admin/scheduling/people', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireTutorAccess(c, blink)
+    if (error || !auth) return error
+    const [students, tutors] = await Promise.all([
+      blink.db.sql(`SELECT sp.user_id, u.display_name, u.email, sp.program_type, sp.school FROM student_profiles sp JOIN users u ON u.id = sp.user_id WHERE sp.status IN ('active', 'onboarding') ORDER BY u.display_name, u.email LIMIT ?`, [200]),
+      blink.db.sql(`SELECT DISTINCT u.id, u.display_name, u.email FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE r.name IN (?, ?, ?, ?) ORDER BY u.display_name, u.email LIMIT ?`, ['system_admin', 'admin', 'super_admin', 'tutor', 100]),
+    ])
+    return c.json({ students: students.rows.map(row => ({ id: row.userId, displayName: row.displayName, email: row.email, programType: row.programType, school: row.school })), tutors: tutors.rows.map(row => ({ id: row.id, displayName: row.displayName, email: row.email })) })
+  } catch (error) {
+    console.error('Scheduling people read failed', error)
+    return c.json({ error: 'Scheduling people are temporarily unavailable.' }, 503)
+  }
+})
+
+app.get('/api/admin/scheduling/sessions', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireTutorAccess(c, blink)
+    if (error || !auth) return error
+    const result = await blink.db.sql(`SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.timezone, ts.status, ts.google_event_id, ts.calendar_sync_status, su.display_name AS student_name, su.email AS student_email, tu.display_name AS tutor_name, tu.email AS tutor_email, sp.program_type FROM tutoring_sessions ts JOIN users su ON su.id = ts.student_id JOIN users tu ON tu.id = ts.tutor_id LEFT JOIN student_profiles sp ON sp.user_id = ts.student_id WHERE ts.starts_at >= datetime('now', '-1 day') ORDER BY ts.starts_at ASC LIMIT ?`, [100])
+    return c.json({ sessions: result.rows.map(mapScheduledSession) })
+  } catch (error) {
+    console.error('Scheduled sessions read failed', error)
+    return c.json({ error: 'Tutoring sessions are temporarily unavailable.' }, 503)
+  }
+})
+
+app.post('/api/admin/scheduling/sessions', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireTutorAccess(c, blink)
+    if (error || !auth) return error
+    const body = await c.req.json<Record<string, unknown>>()
+    const studentId = clean(body.studentId, 120)
+    const tutorId = clean(body.tutorId, 120)
+    const startsAt = clean(body.startsAt, 80)
+    const endsAt = clean(body.endsAt, 80)
+    const timezone = clean(body.timezone, 80) || 'UTC'
+    const start = new Date(startsAt)
+    const end = new Date(endsAt)
+    if (!studentId || !tutorId || !startsAt || !endsAt || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return c.json({ error: 'Choose a student, tutor, valid start, and end time.' }, 400)
+    const people = await blink.db.sql('SELECT id, display_name, email FROM users WHERE id IN (?, ?) LIMIT 2', [studentId, tutorId])
+    if (people.rows.length < 2) return c.json({ error: 'The selected student or tutor could not be found.' }, 404)
+    const student = people.rows.find(row => row.id === studentId)
+    const tutor = people.rows.find(row => row.id === tutorId)
+    const id = `tutoring_session_${crypto.randomUUID()}`
+    await blink.db.sql('INSERT INTO tutoring_sessions (id, student_id, tutor_id, starts_at, ends_at, timezone, status, calendar_sync_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, studentId, tutorId, startsAt, endsAt, timezone, 'scheduled', 'not_synced'])
+    await blink.db.sql('INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)', [`audit_${crypto.randomUUID()}`, auth.userId, 'tutoring_session_created', 'tutoring_session', id, 'success', JSON.stringify({ studentId, tutorId, startsAt, endsAt, timezone })])
+    return c.json({ session: { id, studentId, tutorId, studentName: student?.displayName, studentEmail: student?.email, tutorName: tutor?.displayName, tutorEmail: tutor?.email, startsAt, endsAt, timezone, status: 'scheduled', calendarSyncStatus: 'not_synced' } }, 201)
+  } catch (error) {
+    console.error('Scheduled session create failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'The tutoring session could not be booked.' }, 400)
+  }
+})
+
+app.post('/api/admin/scheduling/sessions/:id/calendar', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const { auth, error } = await requireTutorAccess(c, blink)
+    if (error || !auth) return error
+    const id = clean(c.req.param('id'), 120)
+    const body = await c.req.json<Record<string, unknown>>()
+    const eventId = clean(body.eventId, 300)
+    if (!id || !eventId) return c.json({ error: 'A session and Google Calendar event are required.' }, 400)
+    const existing = await blink.db.sql('SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.timezone, ts.status, ts.google_event_id, ts.calendar_sync_status, su.display_name AS student_name, su.email AS student_email, tu.display_name AS tutor_name, tu.email AS tutor_email, sp.program_type FROM tutoring_sessions ts JOIN users su ON su.id = ts.student_id JOIN users tu ON tu.id = ts.tutor_id LEFT JOIN student_profiles sp ON sp.user_id = ts.student_id WHERE ts.id = ? LIMIT 1', [id])
+    if (!existing.rows[0]) return c.json({ error: 'Tutoring session not found.' }, 404)
+    await blink.db.sql('UPDATE tutoring_sessions SET google_event_id = ?, calendar_sync_status = ? WHERE id = ?', [eventId, 'synced', id])
+    return c.json({ session: mapScheduledSession({ ...existing.rows[0], googleEventId: eventId, calendarSyncStatus: 'synced' }) })
+  } catch (error) {
+    console.error('Calendar sync status update failed', error)
+    return c.json({ error: 'The session was booked, but its calendar status could not be updated.' }, 503)
+  }
+})
+
+app.get('/api/student/scheduling/sessions', async (c) => {
+  const blink = getBlink(c.env as Record<string, string>)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid student session is required.' }, 401)
+    const result = await blink.db.sql(`SELECT ts.id, ts.student_id, ts.tutor_id, ts.starts_at, ts.ends_at, ts.timezone, ts.status, ts.google_event_id, ts.calendar_sync_status, tu.display_name AS tutor_name, tu.email AS tutor_email FROM tutoring_sessions ts JOIN users tu ON tu.id = ts.tutor_id WHERE ts.student_id = ? AND ts.starts_at >= datetime('now', '-1 day') ORDER BY ts.starts_at ASC LIMIT ?`, [auth.userId, 50])
+    return c.json({ sessions: result.rows.map(mapScheduledSession) })
+  } catch (error) {
+    console.error('Student schedule read failed', error)
+    return c.json({ error: 'Your tutoring schedule is temporarily unavailable.' }, 503)
   }
 })
 
