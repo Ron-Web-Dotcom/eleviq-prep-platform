@@ -68,6 +68,22 @@ const adminOverviewUrl = 'https://el8e8zlx.backend.blink.new/api/admin/overview'
 const adminLockoutsUrl = 'https://el8e8zlx.backend.blink.new/api/admin/lockouts'
 const adminTemporaryPasswordUrl = 'https://el8e8zlx.backend.blink.new/api/admin/send-temporary-password'
 let cachedOverview: { token: string; range: string; request: Promise<AdminOverview> } | null = null
+let cachedAdminAccess: { token: string; result: { authorized: boolean; role?: string }; expiresAt: number } | null = null
+let adminAccessRequest: { token: string; request: Promise<{ authorized: boolean; role?: string }> } | null = null
+
+const adminAccessStorageKey = (userId: string) => `eleviq_admin_access_${userId}`
+
+export function getCachedAdminAccess(userId: string): { authorized: boolean; role?: string } | null {
+  try {
+    const raw = sessionStorage.getItem(adminAccessStorageKey(userId))
+    if (!raw) return null
+    const stored = JSON.parse(raw) as { result?: { authorized?: boolean; role?: string }; expiresAt?: number }
+    if (!stored.expiresAt || stored.expiresAt <= Date.now() || !stored.result) return null
+    return { authorized: stored.result.authorized === true, role: stored.result.role }
+  } catch {
+    return null
+  }
+}
 
 export async function fetchAdminLockouts(): Promise<{ lockouts: AdminLockout[]; events: AdminLockoutEvent[] }> {
   const token = await getAdminToken()
@@ -89,7 +105,7 @@ const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(
 
 async function getAdminToken() {
   let lastError: unknown
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       if (blink.auth.isAuthenticated()) {
         const token = await blink.auth.getValidToken()
@@ -98,35 +114,51 @@ async function getAdminToken() {
     } catch (cause) {
       lastError = cause
     }
-    await wait(250 * (attempt + 1))
+    await wait(200 * (attempt + 1))
   }
   if (lastError instanceof Error) throw lastError
   throw new Error('Your admin session has not finished loading. Please try again.')
 }
 
-export async function checkAdminAccess(): Promise<{ authorized: boolean; role?: string }> {
-  let lastError: unknown
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+export async function checkAdminAccess(userId?: string): Promise<{ authorized: boolean; role?: string }> {
+  const token = await getAdminToken()
+  const cached = userId ? getCachedAdminAccess(userId) : null
+  if (cached) {
+    cachedAdminAccess = { token, result: cached, expiresAt: Date.now() + 60_000 }
+    return cached
+  }
+  if (cachedAdminAccess && cachedAdminAccess.token === token && cachedAdminAccess.expiresAt > Date.now()) return cachedAdminAccess.result
+  if (adminAccessRequest?.token === token) return adminAccessRequest.request
+  const request = (async () => {
     const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), 10000)
+    const timeout = window.setTimeout(() => controller.abort(), 5000)
     try {
-      const token = await getAdminToken()
       const response = await fetch(adminAccessUrl, {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       })
       const body = await response.json().catch(() => ({})) as { authorized?: boolean; role?: string; error?: string }
-      if (response.ok || response.status === 403) return { authorized: body.authorized === true, role: body.role }
-      if (response.status !== 401 && response.status !== 503) throw new Error(body.error || `Admin access check failed (${response.status})`)
-      lastError = new Error(body.error || `Admin access check failed (${response.status})`)
+      if (response.ok || response.status === 403) {
+        const result = { authorized: body.authorized === true, role: body.role }
+        const expiresAt = Date.now() + 60_000
+        cachedAdminAccess = { token, result, expiresAt }
+        if (userId) sessionStorage.setItem(adminAccessStorageKey(userId), JSON.stringify({ result, expiresAt }))
+        return result
+      }
+      throw new Error(body.error || `Admin access check failed (${response.status})`)
     } catch (cause) {
-      lastError = cause instanceof DOMException && cause.name === 'AbortError' ? new Error('Admin access verification timed out.') : cause
+      if (cause instanceof DOMException && cause.name === 'AbortError') throw new Error('Admin access verification timed out. Please try again.')
+      throw cause
     } finally {
       window.clearTimeout(timeout)
     }
-    await wait(500 * (attempt + 1))
+  })()
+  adminAccessRequest = { token, request }
+  try {
+    return await request
+  } finally {
+    if (adminAccessRequest?.request === request) adminAccessRequest = null
   }
-  throw lastError instanceof Error ? lastError : new Error('Admin access could not be verified. Please try again.')
 }
 
 type FetchAdminOptions = { force?: boolean; range?: string }
