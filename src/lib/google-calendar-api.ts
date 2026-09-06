@@ -11,7 +11,24 @@ export type CalendarEvent = {
   end?: { dateTime?: string; date?: string }
 }
 
-type IntegrationStatus = { connected?: boolean; provider?: string; email?: string }
+export type ClassroomCourse = { id: string; name?: string; section?: string; descriptionHeading?: string; courseState?: string; enrollmentCode?: string }
+export type ClassroomWork = { id: string; courseId?: string; title?: string; description?: string; dueDate?: { year?: number; month?: number; day?: number }; dueTime?: { hours?: number; minutes?: number }; workType?: string; state?: string; submissionState?: string; alternateLink?: string }
+export type IntegrationStatus = {
+  connected?: boolean
+  provider?: string
+  email?: string
+  role?: 'student' | 'tutor' | 'admin'
+  capabilities?: {
+    calendarRead?: boolean
+    calendarCreate?: boolean
+    meetCreate?: boolean
+    classroomCoursesRead?: boolean
+    classroomCourseworkRead?: boolean
+    classroomSubmissionsRead?: boolean
+    classroomCourseworkCreate?: boolean
+    broaderStudentData?: boolean
+  }
+}
 
 export async function getGoogleIntegrationStatus(): Promise<IntegrationStatus> {
   const response = await blink.functions.invoke('api/google/integration/status')
@@ -30,6 +47,21 @@ export async function startGoogleIntegration() {
 
 export async function disconnectGoogleIntegration() {
   return blink.functions.invoke('api/google/integration/disconnect', { body: {} })
+}
+
+export async function fetchGoogleClassroomCourses() {
+  const response = await blink.functions.invoke('api/google/classroom/courses', { body: {} }) as { courses?: unknown[] }
+  return Array.isArray(response.courses) ? response.courses as ClassroomCourse[] : []
+}
+
+export async function fetchGoogleClassroomWork(courseId: string) {
+  const response = await blink.functions.invoke('api/google/classroom/coursework', { body: { courseId } }) as { coursework?: unknown[]; items?: unknown[] }
+  const items = response.coursework || response.items
+  return Array.isArray(items) ? items as ClassroomWork[] : []
+}
+
+export async function createGoogleClassroomWork(input: { courseId: string; title: string; description: string; workType: 'ASSIGNMENT' | 'MATERIAL' | 'QUIZ'; dueDate?: string }) {
+  return blink.functions.invoke('api/google/classroom/coursework', { body: input })
 }
 
 export async function getGoogleCalendarStatus() {

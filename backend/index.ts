@@ -25,8 +25,11 @@ const googleScopes = [
   'email',
   'profile',
   'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/classroom.courses.readonly',
+  'https://www.googleapis.com/auth/classroom.courses',
   'https://www.googleapis.com/auth/classroom.coursework.students',
+  'https://www.googleapis.com/auth/classroom.coursework.me',
+  'https://www.googleapis.com/auth/classroom.student-submissions.students.readonly',
+  'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly',
   'https://www.googleapis.com/auth/classroom.rosters',
   'https://www.googleapis.com/auth/meetings.space.created',
 ].join(' ')
@@ -56,6 +59,43 @@ const googleCallbackUrl = (env: Record<string, string>) => `https://${env.BLINK_
 const integrationId = (userId: string) => `google_integration_${userId}`
 const parseScopes = (value: unknown) => typeof value === 'string' ? value : '[]'
 
+// Google API calls refresh proactively and retry once after a 401. Tokens never leave the backend.
+const googleFetch = (url: string, init: RequestInit) => fetch(url, { ...init, signal: AbortSignal.timeout(15000) })
+const googleIntegration = async (blink: ReturnType<typeof getBlink>, userId: string) => {
+  const result = await blink.db.sql('SELECT access_token, refresh_token, expires_at FROM google_integrations WHERE user_id = ? LIMIT 1', [userId])
+  return result.rows[0] as { accessToken?: string; refreshToken?: string; expiresAt?: string } | undefined
+}
+const googleAccessToken = async (blink: ReturnType<typeof getBlink>, env: Record<string, string>, userId: string, forceRefresh = false) => {
+  const integration = await googleIntegration(blink, userId)
+  if (!integration?.accessToken) throw new Error('GOOGLE_NOT_CONNECTED')
+  if ((forceRefresh || (integration.expiresAt && new Date(integration.expiresAt).getTime() <= Date.now() + 60000)) && integration.refreshToken) {
+    const { clientId, clientSecret } = googleEnv(env)
+    const tokens = await googleTokenResponse(env, new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: integration.refreshToken, grant_type: 'refresh_token' }))
+    const token = clean(tokens.access_token, 4000)
+    if (!token) throw new Error('Google did not return a refreshed access token.')
+    await blink.db.sql('UPDATE google_integrations SET access_token = ?, expires_at = ?, updated_at = ? WHERE user_id = ?', [token, tokens.expires_in ? new Date(Date.now() + Number(tokens.expires_in) * 1000).toISOString() : null, new Date().toISOString(), userId])
+    return token
+  }
+  return integration.accessToken
+}
+const googleRequest = async (blink: ReturnType<typeof getBlink>, env: Record<string, string>, userId: string, url: string, init: RequestInit = {}) => {
+  let token = await googleAccessToken(blink, env, userId)
+  const request = () => googleFetch(url, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } })
+  let response = await request()
+  if (response.status === 401) {
+    token = await googleAccessToken(blink, env, userId, true)
+    response = await request()
+  }
+  return response
+}
+const googleRoleCapabilities = async (blink: ReturnType<typeof getBlink>, userId: string) => {
+  const result = await blink.db.sql(`SELECT r.name AS roleName FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?`, [userId])
+  const roles = result.rows.map(row => String(row.roleName || '').toLowerCase())
+  const admin = roles.some(role => ['admin', 'system_admin', 'super_admin'].includes(role))
+  const tutor = admin || roles.includes('tutor')
+  return { role: admin ? 'admin' : tutor ? 'tutor' : 'student', capabilities: { calendarRead: true, calendarCreate: true, meetCreate: true, classroomCoursesRead: true, classroomCourseworkRead: true, classroomSubmissionsRead: true, classroomCourseworkCreate: tutor, broaderStudentData: admin } }
+}
+
 const hashSecret = async (value: string, salt: string) => {
   const encoded = new TextEncoder().encode(`${salt}:${value}`)
   const digest = await crypto.subtle.digest('SHA-256', encoded)
@@ -81,7 +121,8 @@ app.get('/api/google/integration/status', async (c) => {
     if (!auth.valid || !auth.userId) return c.json({ connected: false }, 401)
     const result = await blink.db.sql('SELECT google_email, scopes FROM google_integrations WHERE user_id = ? LIMIT 1', [auth.userId])
     const row = result.rows[0] as { googleEmail?: string; scopes?: string } | undefined
-    return c.json({ connected: Boolean(row), provider: row ? 'google' : undefined, email: row?.googleEmail, scopes: parseScopes(row?.scopes) })
+    const permissions = await googleRoleCapabilities(blink, auth.userId)
+    return c.json({ connected: Boolean(row), provider: row ? 'google' : undefined, email: row?.googleEmail, scopes: parseScopes(row?.scopes), role: permissions.role, capabilities: permissions.capabilities })
   } catch (error) {
     console.error('Google integration status failed', error)
     return c.json({ error: 'Google integration status is temporarily unavailable.' }, 503)
@@ -166,20 +207,13 @@ app.post('/api/google/calendar/events', async (c) => {
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
     if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
-    const result = await blink.db.sql('SELECT access_token, refresh_token, expires_at FROM google_integrations WHERE user_id = ? LIMIT 1', [auth.userId])
-    const integration = result.rows[0] as { accessToken?: string; refreshToken?: string; expiresAt?: string } | undefined
-    if (!integration?.accessToken) return c.json({ error: 'Connect the shared Google account before using Calendar, Classroom, or Meet.' }, 409)
-    let accessToken = integration.accessToken
-    if (integration.expiresAt && new Date(integration.expiresAt).getTime() < Date.now() + 60000 && integration.refreshToken) {
-      const { clientId, clientSecret } = googleEnv(env)
-      const tokens = await googleTokenResponse(env, new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: integration.refreshToken, grant_type: 'refresh_token' }))
-      accessToken = clean(tokens.access_token, 4000)
-      await blink.db.sql('UPDATE google_integrations SET access_token = ?, expires_at = ?, updated_at = ? WHERE user_id = ?', [accessToken, tokens.expires_in ? new Date(Date.now() + Number(tokens.expires_in) * 1000).toISOString() : null, new Date().toISOString(), auth.userId])
-    }
     const body = await c.req.json<Record<string, unknown>>()
-    const calendarResponse = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: clean(body.summary, 240), description: clean(body.description, 4000), start: { dateTime: clean(body.startsAt, 80), timeZone: clean(body.timezone, 80) || 'UTC' }, end: { dateTime: clean(body.endsAt, 80), timeZone: clean(body.timezone, 80) || 'UTC' }, attendees: Array.isArray(body.attendeeEmails) ? body.attendeeEmails.map(email => ({ email: clean(email, 240) })).filter(item => item.email) : [], conferenceData: { createRequest: { requestId: `eleviq-${crypto.randomUUID()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } }), signal: AbortSignal.timeout(15000) })
+    const startsAt = clean(body.startsAt, 80)
+    const endsAt = clean(body.endsAt, 80)
+    if (!clean(body.summary, 240) || !startsAt || !endsAt) return c.json({ error: 'Calendar events require a title, start time, and end time.' }, 400)
+    const calendarResponse = await googleRequest(blink, env, auth.userId, 'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: clean(body.summary, 240), description: clean(body.description, 4000), start: { dateTime: startsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, end: { dateTime: endsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, attendees: Array.isArray(body.attendeeEmails) ? body.attendeeEmails.map(email => ({ email: clean(email, 240) })).filter(item => item.email) : [], conferenceData: { createRequest: { requestId: `eleviq-${crypto.randomUUID()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } }) })
     const event = await calendarResponse.json() as Record<string, unknown>
-    if (!calendarResponse.ok) return c.json({ error: typeof event.error === 'object' ? 'Google Calendar rejected the event.' : `Google Calendar request failed (${calendarResponse.status})` }, calendarResponse.status === 401 ? 401 : 502)
+    if (!calendarResponse.ok) return c.json({ error: calendarResponse.status === 403 ? 'Google Calendar denied event creation for this account.' : `Google Calendar request failed (${calendarResponse.status})` }, calendarResponse.status === 401 ? 401 : 502)
     const meetingUri = typeof event.hangoutLink === 'string' ? event.hangoutLink : undefined
     return c.json({ event, meetingUri })
   } catch (error) {
@@ -188,23 +222,69 @@ app.post('/api/google/calendar/events', async (c) => {
   }
 })
 
+const googleApiError = (response: Response, service: string) => response.status === 403 ? `Google ${service} denied access for this account.` : response.status === 401 ? 'Google authorization expired. Reconnect your Google account.' : `Google ${service} request failed (${response.status}).`
+
 app.post('/api/google/classroom/courses', async (c) => {
   const env = c.env as Record<string, string>
   const blink = getBlink(env)
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
     if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
-    const result = await blink.db.sql('SELECT access_token FROM google_integrations WHERE user_id = ? LIMIT 1', [auth.userId])
-    const accessToken = (result.rows[0] as { accessToken?: string } | undefined)?.accessToken
-    if (!accessToken) return c.json({ error: 'Connect the shared Google account before using Classroom.' }, 409)
-    const response = await fetch('https://classroom.googleapis.com/v1/courses?pageSize=50', { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10000) })
-    const data = await response.json()
-    if (!response.ok) return c.json({ error: 'Google Classroom could not be loaded.' }, response.status === 401 ? 401 : 502)
+    const response = await googleRequest(blink, env, auth.userId, 'https://classroom.googleapis.com/v1/courses?pageSize=50')
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502)
     return c.json(data)
   } catch (error) {
     console.error('Google Classroom request failed', error)
-    return c.json({ error: 'Google Classroom is temporarily unavailable.' }, 503)
+    return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503)
   }
+})
+
+app.get('/api/google/calendar/events', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
+    const params = new URLSearchParams({ timeMin: clean(c.req.query('timeMin'), 80) || new Date().toISOString(), timeMax: clean(c.req.query('timeMax'), 80) || new Date(Date.now() + 90 * 86400000).toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '250' })
+    const response = await googleRequest(blink, env, auth.userId, `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`); const data = await response.json().catch(() => ({}))
+    if (!response.ok) return c.json({ error: googleApiError(response, 'Calendar') }, response.status === 401 ? 401 : 502)
+    return c.json(data)
+  } catch (error) { console.error('Google Calendar events failed', error); return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Calendar.' : 'Google Calendar is temporarily unavailable.' }, 503) }
+})
+
+app.get('/api/google/classroom/courses/:courseId', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try { const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401); const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(clean(c.req.param('courseId'), 200))}`); const data = await response.json().catch(() => ({})); if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502); return c.json(data) } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
+})
+
+app.get('/api/google/classroom/courses/:courseId/coursework', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try { const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401); const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(clean(c.req.param('courseId'), 200))}/courseWork?pageSize=100`); const data = await response.json().catch(() => ({})); if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502); return c.json(data) } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
+})
+
+app.post('/api/google/classroom/coursework', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
+    const body = await c.req.json<Record<string, unknown>>(); const courseId = clean(body.courseId, 200); if (!courseId) return c.json({ error: 'courseId is required.' }, 400)
+    const permissions = await googleRoleCapabilities(blink, auth.userId)
+    const list = !body.title
+    if (!list && !permissions.capabilities.classroomCourseworkCreate) return c.json({ error: 'Only tutors and administrators may create coursework.' }, 403)
+    const workType = body.workType === 'MATERIAL' ? 'MATERIAL' : body.workType === 'QUIZ' ? 'QUIZ' : 'ASSIGNMENT'
+    const endpoint = list ? 'courseWork' : workType === 'MATERIAL' ? 'courseWorkMaterials' : 'courseWork'
+    const dueDateValue = clean(body.dueDate, 80)
+    const parsedDueDate = dueDateValue ? new Date(dueDateValue) : null
+    const dueDate = parsedDueDate && !Number.isNaN(parsedDueDate.getTime()) ? { year: parsedDueDate.getFullYear(), month: parsedDueDate.getMonth() + 1, day: parsedDueDate.getDate() } : undefined
+    const dueTime = parsedDueDate && !Number.isNaN(parsedDueDate.getTime()) ? { hours: parsedDueDate.getHours(), minutes: parsedDueDate.getMinutes() } : undefined
+    const url = `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/${endpoint}${list ? '?pageSize=100' : ''}`
+    const payload = list ? undefined : JSON.stringify({ title: clean(body.title, 240), description: clean(body.description, 4000), ...(workType === 'MATERIAL' ? {} : { workType: workType === 'QUIZ' ? 'MULTIPLE_CHOICE_QUESTION' : 'ASSIGNMENT', state: 'PUBLISHED', ...(workType === 'QUIZ' ? { quizSettings: { isQuiz: true } } : {}), ...(dueDate ? { dueDate, dueTime } : {}) }) })
+    const response = await googleRequest(blink, env, auth.userId, url, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload } : {})
+    const data = await response.json().catch(() => ({})); return c.json(response.ok ? data : { error: googleApiError(response, 'Classroom') }, response.ok ? 200 : response.status === 401 ? 401 : 502)
+  } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
+})
+
+app.get('/api/google/classroom/coursework/:courseWorkId/submissions', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try { const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401); const courseId = clean(c.req.query('courseId'), 200); if (!courseId) return c.json({ error: 'courseId is required.' }, 400); const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/courseWork/${encodeURIComponent(clean(c.req.param('courseWorkId'), 200))}/studentSubmissions`); const data = await response.json().catch(() => ({})); return c.json(data, response.ok ? 200 : 502) } catch { return c.json({ error: 'Google Classroom is temporarily unavailable.' }, 503) }
 })
 
 app.post('/api/contact', async (c) => {
