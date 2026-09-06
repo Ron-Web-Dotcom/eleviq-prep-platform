@@ -61,38 +61,39 @@
 }
 
 .dark {
-  --background: oklch(0.14 0.075 264);
+  /* Deep navy direction from the ELEVIQ dark-mode reference. */
+  --background: #000427;
   --foreground: oklch(0.97 0.012 245);
-  --card: oklch(0.19 0.09 264);
+  --card: #010629;
   --card-foreground: oklch(0.97 0.012 245);
-  --popover: oklch(0.19 0.09 264);
+  --popover: #010629;
   --popover-foreground: oklch(0.97 0.012 245);
-  --primary: oklch(0.72 0.14 255);
-  --primary-foreground: oklch(0.14 0.075 264);
-  --secondary: oklch(0.25 0.09 264);
-  --secondary-foreground: oklch(0.93 0.035 245);
-  --muted: oklch(0.22 0.085 264);
-  --muted-foreground: oklch(0.76 0.045 245);
-  --accent: oklch(0.84 0.15 88);
-  --accent-foreground: oklch(0.18 0.09 264);
+  --primary: #92b7d1;
+  --primary-foreground: #000427;
+  --secondary: #010c4e;
+  --secondary-foreground: oklch(0.97 0.012 245);
+  --muted: #07113b;
+  --muted-foreground: #92b7d1;
+  --accent: #998041;
+  --accent-foreground: #000427;
   --destructive: oklch(0.66 0.17 29);
-  --destructive-foreground: oklch(0.2 0.035 264);
-  --border: oklch(0.36 0.09 264);
-  --input: oklch(0.36 0.09 264);
-  --ring: oklch(0.72 0.14 255);
-  --chart-1: oklch(0.72 0.14 255);
-  --chart-2: oklch(0.84 0.15 88);
+  --destructive-foreground: oklch(0.97 0.012 245);
+  --border: #102257;
+  --input: #102257;
+  --ring: #92b7d1;
+  --chart-1: #92b7d1;
+  --chart-2: #998041;
   --chart-3: oklch(0.68 0.12 150);
   --chart-4: oklch(0.7 0.12 225);
-  --chart-5: oklch(0.78 0.12 88);
-  --sidebar: oklch(0.115 0.065 264);
+  --chart-5: #998041;
+  --sidebar: #000427;
   --sidebar-foreground: oklch(0.97 0.012 245);
-  --sidebar-primary: oklch(0.72 0.14 255);
-  --sidebar-primary-foreground: oklch(0.14 0.075 264);
-  --sidebar-accent: oklch(0.22 0.085 264);
-  --sidebar-accent-foreground: oklch(0.93 0.035 245);
-  --sidebar-border: oklch(0.3 0.08 264);
-  --sidebar-ring: oklch(0.72 0.14 255);
+  --sidebar-primary: #92b7d1;
+  --sidebar-primary-foreground: #000427;
+  --sidebar-accent: #010c4e;
+  --sidebar-accent-foreground: oklch(0.97 0.012 245);
+  --sidebar-border: #102257;
+  --sidebar-ring: #92b7d1;
 }
 
 /* ── Token → utility mapping (Tailwind v4). Same file as the values above. ── */
@@ -167,6 +168,8 @@
 @layer utilities {
   .animate-fade-in { animation: fade-in 0.3s ease-in-out; }
   .brand-mark { background-color: #fdfefe; }
+  .eleviq-logo { transition: filter 0.25s ease, opacity 0.25s ease; }
+  .dark .eleviq-logo { filter: brightness(2.25) saturate(1.2); opacity: 0.96; }
   @keyframes fade-in {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
