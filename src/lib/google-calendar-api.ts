@@ -5,30 +5,60 @@ export type CalendarEvent = {
   summary: string
   description?: string
   htmlLink?: string
+  hangoutLink?: string
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> }
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
 }
 
-export async function getGoogleCalendarStatus() {
-  const response = await blink.connectors.status('google_calendar')
-  return response.data as { connected?: boolean }
+type IntegrationStatus = { connected?: boolean; provider?: string; email?: string }
+
+export async function getGoogleIntegrationStatus(): Promise<IntegrationStatus> {
+  const response = await blink.functions.invoke('api/google/integration/status')
+  return response as IntegrationStatus
 }
 
+export async function startGoogleIntegration() {
+  const token = await blink.auth.getValidToken()
+  if (!token) throw new Error('Your ELEVIQ session has expired. Please sign in again.')
+  const response = await blink.functions.invoke('api/google/integration/start', {
+    body: { origin: window.location.origin, returnTo: `${window.location.pathname}${window.location.search}` },
+  }) as { authorizationUrl?: string }
+  if (!response.authorizationUrl) throw new Error('Google authorization could not be started.')
+  window.location.assign(response.authorizationUrl)
+}
+
+export async function disconnectGoogleIntegration() {
+  return blink.functions.invoke('api/google/integration/disconnect', { body: {} })
+}
+
+export async function getGoogleCalendarStatus() {
+  try {
+    const unified = await getGoogleIntegrationStatus()
+    if (unified.provider === 'google' || unified.connected) return unified
+  } catch {
+    // Keep the existing connector fallback available for accounts connected before unified OAuth.
+  }
+  const response = await blink.connectors.status('google_calendar')
+  return response.data as IntegrationStatus
+}
+
+const unifiedGoogleFetch = async (path: string, body?: Record<string, unknown>) => {
+  const response = await blink.functions.invoke(path, body ? { body } : undefined)
+  return response as unknown as Record<string, unknown>
+}
+
+const conferenceUri = (event: CalendarEvent) => event.hangoutLink || event.conferenceData?.entryPoints?.find(point => point.entryPointType === 'video')?.uri
+
 export async function fetchGoogleCalendarEvents(days = 14): Promise<CalendarEvent[]> {
-  const status = await getGoogleCalendarStatus()
-  if (!status.connected) return []
+  const status = await getGoogleIntegrationStatus()
+  if (status.connected) {
+    const end = new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+    const data = await unifiedGoogleFetch('api/google/calendar/events', { timeMin: new Date().toISOString(), timeMax: end.toISOString(), maxResults: 25 })
+    return Array.isArray(data.items) ? data.items.filter((item): item is CalendarEvent => Boolean(item && typeof item === 'object' && 'id' in item && 'summary' in item)) : []
+  }
   const end = new Date(Date.now() + days * 24 * 60 * 60 * 1000)
-  const response = await blink.connectors.execute('google_calendar', {
-    method: '/events',
-    http_method: 'GET',
-    params: {
-      timeMin: new Date().toISOString(),
-      timeMax: end.toISOString(),
-      maxResults: '25',
-      orderBy: 'startTime',
-      singleEvents: 'true',
-    },
-  })
+  const response = await blink.connectors.execute('google_calendar', { method: '/events', http_method: 'GET', params: { timeMin: new Date().toISOString(), timeMax: end.toISOString(), maxResults: '25', orderBy: 'startTime', singleEvents: 'true' } })
   const data = response.data as { items?: unknown[] }
   return Array.isArray(data.items) ? data.items.filter((item): item is CalendarEvent => Boolean(item && typeof item === 'object' && 'id' in item && 'summary' in item)) : []
 }
@@ -41,20 +71,13 @@ export async function createGoogleCalendarEvent(input: {
   timezone: string
   attendeeEmails?: string[]
 }) {
-  const status = await getGoogleCalendarStatus()
-  if (!status.connected) return { connected: false, event: null }
-  const response = await blink.connectors.execute('google_calendar', {
-    method: '/events',
-    http_method: 'POST',
-    params: {
-      summary: input.summary,
-      description: input.description,
-      start: { dateTime: input.startsAt, timeZone: input.timezone },
-      end: { dateTime: input.endsAt, timeZone: input.timezone },
-      attendees: (input.attendeeEmails || []).filter(Boolean).map(email => ({ email })),
-      sendUpdates: 'all',
-      reminders: { useDefault: true },
-    },
-  })
-  return { connected: true, event: response.data as CalendarEvent }
+  const status = await getGoogleIntegrationStatus()
+  if (status.connected) {
+    const result = await unifiedGoogleFetch('api/google/calendar/events', input)
+    return { connected: true, event: result.event as CalendarEvent, meetingUri: result.meetingUri as string | undefined }
+  }
+  const legacyStatus = await getGoogleCalendarStatus()
+  if (!legacyStatus.connected) return { connected: false, event: null, meetingUri: undefined }
+  const response = await blink.connectors.execute('google_calendar', { method: '/events', http_method: 'POST', params: { summary: input.summary, description: input.description, start: { dateTime: input.startsAt, timeZone: input.timezone }, end: { dateTime: input.endsAt, timeZone: input.timezone }, attendees: (input.attendeeEmails || []).filter(Boolean).map(email => ({ email })), sendUpdates: 'all', reminders: { useDefault: true } } })
+  return { connected: true, event: response.data as CalendarEvent, meetingUri: conferenceUri(response.data as CalendarEvent) }
 }

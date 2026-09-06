@@ -82,6 +82,18 @@ export type FaqsRow = {
   updatedAt: string
 }
 
+export type GoogleIntegrationsRow = {
+  id: string
+  userId: string
+  googleEmail: string | null
+  accessToken: string | null
+  refreshToken: string | null
+  expiresAt: string | null
+  scopes: string
+  createdAt: string
+  updatedAt: string
+}
+
 export type LeadsRow = {
   id: string
   userId: string | null
