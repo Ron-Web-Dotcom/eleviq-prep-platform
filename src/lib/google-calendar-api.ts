@@ -35,11 +35,11 @@ export async function getGoogleIntegrationStatus(): Promise<IntegrationStatus> {
   return response as IntegrationStatus
 }
 
-export async function startGoogleIntegration() {
+export async function startGoogleIntegration(returnTo?: string) {
   const token = await blink.auth.getValidToken()
   if (!token) throw new Error('Your ELEVIQ session has expired. Please sign in again.')
   const response = await blink.functions.invoke('api/google/integration/start', {
-    body: { origin: window.location.origin, returnTo: `${window.location.pathname}${window.location.search}` },
+    body: { origin: window.location.origin, returnTo: returnTo || `${window.location.pathname}${window.location.search}` },
   }) as { authorizationUrl?: string }
   if (!response.authorizationUrl) throw new Error('Google authorization could not be started.')
   window.location.assign(response.authorizationUrl)

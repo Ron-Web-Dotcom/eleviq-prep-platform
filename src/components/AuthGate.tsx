@@ -36,17 +36,9 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
         setLoading(false)
         return
       }
-      if (state.user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com') {
-        void (async () => {
-          try {
-            await blink.auth.signOut()
-          } finally {
-            setSignedIn(false)
-            setLoading(false)
-          }
-        })()
-        return
-      }
+      // Google-authenticated students may use their personal Google account.
+      // Email/password entry remains restricted by the login form to verified
+      // ELEVIQ addresses, while Google identity is allowed for Classroom linking.
       setSignedIn(true)
       setLoading(false)
     })
