@@ -72,14 +72,23 @@ app.post('/api/contact', async (c) => {
       html: `<h2>New ELEVIQ inquiry</h2><p><strong>Name:</strong> ${escapeHtml(name)}</p><p><strong>Email:</strong> ${escapeHtml(email)}</p><p><strong>Phone:</strong> ${escapeHtml(phone || 'Not provided')}</p><p><strong>Interest:</strong> ${escapeHtml(programInterest || 'Not specified')}</p><p>${safeMessage}</p>`,
     })
 
-    await blink.db.table('leads').create({
-      name,
-      email,
-      phone: phone || undefined,
-      programInterest: programInterest || undefined,
-      notes: message || undefined,
-      source: 'public_website',
-    })
+    // Public contact submissions cannot use the table CRUD API because the
+    // leads table is intentionally write-denied for browser tokens. This
+    // backend has the service key, so persist through its service-role SQL path.
+    await blink.db.sql(
+      `INSERT INTO leads (id, name, email, phone, program_interest, notes, source, stage)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `lead_${crypto.randomUUID()}`,
+        name,
+        email,
+        phone || null,
+        programInterest || null,
+        message || null,
+        'public_website',
+        'new',
+      ],
+    )
 
     return c.json({ success: true })
   } catch (error) {
