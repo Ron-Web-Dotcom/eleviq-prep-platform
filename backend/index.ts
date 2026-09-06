@@ -38,6 +38,15 @@ const defaultAllowedOrigin = (env: Record<string, string>) => `https://${env.BLI
 const isAllowedGoogleOrigin = (origin: string, env: Record<string, string>) => {
   if (!origin) return false
   if (origin === defaultAllowedOrigin(env)) return true
+  try {
+    const url = new URL(origin)
+    // Blink preview hosts are generated per preview session, so they cannot be
+    // listed as one fixed secret. Keep the scope limited to Blink's preview
+    // hostname and continue requiring explicit origins for published domains.
+    if (url.protocol === 'https:' && url.hostname.endsWith('.preview-blink.com')) return true
+  } catch {
+    return false
+  }
   return (env.GOOGLE_ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean).includes(origin)
 }
 const googleEnv = (env: Record<string, string>) => ({
@@ -94,6 +103,23 @@ const googleRoleCapabilities = async (blink: ReturnType<typeof getBlink>, userId
   const admin = roles.some(role => ['admin', 'system_admin', 'super_admin'].includes(role))
   const tutor = admin || roles.includes('tutor')
   return { role: admin ? 'admin' : tutor ? 'tutor' : 'student', capabilities: { calendarRead: true, calendarCreate: true, meetCreate: true, classroomCoursesRead: true, classroomCourseworkRead: true, classroomSubmissionsRead: true, classroomCourseworkCreate: tutor, broaderStudentData: admin } }
+}
+
+const eleviqAttendeeEmails = (value: unknown) => {
+  if (value === undefined) return [] as string[]
+  if (!Array.isArray(value)) throw new Error('attendeeEmails must be an array.')
+  const emails = value.map(email => clean(email, 240)).filter(Boolean)
+  if (emails.some(email => !/@eleviqprep\.com$/i.test(email))) throw new Error('All invited attendees must use an @eleviqprep.com address.')
+  return emails
+}
+
+const createGoogleCalendarEvent = async (blink: ReturnType<typeof getBlink>, env: Record<string, string>, userId: string, body: Record<string, unknown>, attendeeEmails = eleviqAttendeeEmails(body.attendeeEmails)) => {
+  const startsAt = clean(body.startsAt, 80); const endsAt = clean(body.endsAt, 80); const summary = clean(body.summary, 240)
+  if (!summary || !startsAt || !endsAt) throw new Error('Calendar events require a title, start time, and end time.')
+  const response = await googleRequest(blink, env, userId, 'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary, description: clean(body.description, 4000), start: { dateTime: startsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, end: { dateTime: endsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, attendees: attendeeEmails.map(email => ({ email })), conferenceData: { createRequest: { requestId: `eleviq-${crypto.randomUUID()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } }) })
+  const event = await response.json().catch(() => ({})) as Record<string, unknown>
+  if (!response.ok) throw new Error(response.status === 403 ? 'Google Calendar denied event creation for this account.' : `Google Calendar request failed (${response.status})`)
+  return { event, meetingUri: typeof event.hangoutLink === 'string' ? event.hangoutLink : undefined }
 }
 
 const hashSecret = async (value: string, salt: string) => {
@@ -201,24 +227,32 @@ app.post('/api/google/integration/disconnect', async (c) => {
   }
 })
 
+const calendarError = (error: unknown) => error instanceof Error && (error.message === 'attendeeEmails must be an array.' || error.message.includes('All invited attendees') || error.message.includes('Calendar events require'))
+
 app.post('/api/google/calendar/events', async (c) => {
-  const env = c.env as Record<string, string>
-  const blink = getBlink(env)
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
     if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
-    const body = await c.req.json<Record<string, unknown>>()
-    const startsAt = clean(body.startsAt, 80)
-    const endsAt = clean(body.endsAt, 80)
-    if (!clean(body.summary, 240) || !startsAt || !endsAt) return c.json({ error: 'Calendar events require a title, start time, and end time.' }, 400)
-    const calendarResponse = await googleRequest(blink, env, auth.userId, 'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: clean(body.summary, 240), description: clean(body.description, 4000), start: { dateTime: startsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, end: { dateTime: endsAt, timeZone: clean(body.timezone, 80) || 'UTC' }, attendees: Array.isArray(body.attendeeEmails) ? body.attendeeEmails.map(email => ({ email: clean(email, 240) })).filter(item => item.email) : [], conferenceData: { createRequest: { requestId: `eleviq-${crypto.randomUUID()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } }) })
-    const event = await calendarResponse.json() as Record<string, unknown>
-    if (!calendarResponse.ok) return c.json({ error: calendarResponse.status === 403 ? 'Google Calendar denied event creation for this account.' : `Google Calendar request failed (${calendarResponse.status})` }, calendarResponse.status === 401 ? 401 : 502)
-    const meetingUri = typeof event.hangoutLink === 'string' ? event.hangoutLink : undefined
-    return c.json({ event, meetingUri })
+    const result = await createGoogleCalendarEvent(blink, env, auth.userId, await c.req.json<Record<string, unknown>>())
+    return c.json(result)
   } catch (error) {
     console.error('Google Calendar event failed', error)
-    return c.json({ error: error instanceof Error ? error.message : 'Google Calendar is temporarily unavailable.' }, 503)
+    return c.json({ error: error instanceof Error ? error.message : 'Google Calendar is temporarily unavailable.' }, calendarError(error) ? 400 : 503)
+  }
+})
+
+app.post('/api/student/calendar/events', async (c) => {
+  const env = c.env as Record<string, string>; const blink = getBlink(env)
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid student session is required.' }, 401)
+    const body = await c.req.json<Record<string, unknown>>()
+    const result = await createGoogleCalendarEvent(blink, env, auth.userId, body, eleviqAttendeeEmails(body.attendeeEmails))
+    return c.json(result)
+  } catch (error) {
+    console.error('Student Google Calendar event failed', error)
+    return c.json({ error: error instanceof Error ? error.message : 'Google Calendar is temporarily unavailable.' }, calendarError(error) ? 400 : 503)
   }
 })
 
@@ -284,7 +318,20 @@ app.post('/api/google/classroom/coursework', async (c) => {
 
 app.get('/api/google/classroom/coursework/:courseWorkId/submissions', async (c) => {
   const env = c.env as Record<string, string>; const blink = getBlink(env)
-  try { const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401); const courseId = clean(c.req.query('courseId'), 200); if (!courseId) return c.json({ error: 'courseId is required.' }, 400); const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/courseWork/${encodeURIComponent(clean(c.req.param('courseWorkId'), 200))}/studentSubmissions`); const data = await response.json().catch(() => ({})); return c.json(data, response.ok ? 200 : 502) } catch { return c.json({ error: 'Google Classroom is temporarily unavailable.' }, 503) }
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
+    const courseId = clean(c.req.query('courseId'), 200)
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400)
+    const permissions = await googleRoleCapabilities(blink, auth.userId)
+    const broaderAccess = permissions.role === 'tutor' || permissions.role === 'admin'
+    const userFilter = broaderAccess ? '' : '&userId=me'
+    const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/courseWork/${encodeURIComponent(clean(c.req.param('courseWorkId'), 200))}/studentSubmissions?pageSize=100${userFilter}`)
+    const data = await response.json().catch(() => ({})) as Record<string, unknown>
+    if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502)
+    const submissions = Array.isArray(data.studentSubmissions) ? data.studentSubmissions : []
+    return c.json({ ...data, studentSubmissions: broaderAccess ? submissions : submissions.slice(0, 1), submission: submissions[0] || null })
+  } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
 })
 
 app.post('/api/contact', async (c) => {

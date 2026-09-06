@@ -12,7 +12,8 @@ export type CalendarEvent = {
 }
 
 export type ClassroomCourse = { id: string; name?: string; section?: string; descriptionHeading?: string; courseState?: string; enrollmentCode?: string }
-export type ClassroomWork = { id: string; courseId?: string; title?: string; description?: string; dueDate?: { year?: number; month?: number; day?: number }; dueTime?: { hours?: number; minutes?: number }; workType?: string; state?: string; submissionState?: string; alternateLink?: string }
+export type ClassroomWork = { id: string; courseId?: string; title?: string; description?: string; dueDate?: { year?: number; month?: number; day?: number }; dueTime?: { hours?: number; minutes?: number }; workType?: string; state?: string; submissionState?: string; alternateLink?: string; eleviqTestId?: string; submission?: ClassroomSubmission }
+export type ClassroomSubmission = { state?: string; assignedGrade?: number; draftGrade?: number; late?: boolean; feedback?: string; userId?: string }
 export type IntegrationStatus = {
   connected?: boolean
   provider?: string
@@ -60,19 +61,26 @@ export async function fetchGoogleClassroomWork(courseId: string) {
   return Array.isArray(items) ? items as ClassroomWork[] : []
 }
 
+export async function fetchGoogleClassroomSubmission(courseId: string, courseWorkId: string): Promise<ClassroomSubmission | undefined> {
+  const token = await blink.auth.getValidToken()
+  if (!token) throw new Error('Your ELEVIQ session has expired. Please sign in again.')
+  const projectId = import.meta.env.VITE_BLINK_PROJECT_ID || 'eleviq-prep-platform-el8e8zlx'
+  const backendId = projectId.slice(-8)
+  const response = await fetch(`https://${backendId}.backend.blink.new/api/google/classroom/coursework/${encodeURIComponent(courseWorkId)}/submissions?courseId=${encodeURIComponent(courseId)}`, { headers: { Authorization: `Bearer ${token}` } })
+  if (!response.ok) throw new Error('Submission status could not be loaded.')
+  const data = await response.json() as { submission?: ClassroomSubmission; submissions?: ClassroomSubmission[] }
+  return data.submission || data.submissions?.[0]
+}
+
 export async function createGoogleClassroomWork(input: { courseId: string; title: string; description: string; workType: 'ASSIGNMENT' | 'MATERIAL' | 'QUIZ'; dueDate?: string }) {
   return blink.functions.invoke('api/google/classroom/coursework', { body: input })
 }
 
 export async function getGoogleCalendarStatus() {
-  try {
-    const unified = await getGoogleIntegrationStatus()
-    if (unified.provider === 'google' || unified.connected) return unified
-  } catch {
-    // Keep the existing connector fallback available for accounts connected before unified OAuth.
-  }
-  const response = await blink.connectors.status('google_calendar')
-  return response.data as IntegrationStatus
+  // The student portal uses the same personal Google OAuth connection for
+  // Classroom, Calendar, and Meet. Do not fall back to the legacy connector:
+  // that creates noisy 404/401 requests and can show a different account.
+  return getGoogleIntegrationStatus()
 }
 
 const unifiedGoogleFetch = async (path: string, body?: Record<string, unknown>) => {
@@ -102,14 +110,12 @@ export async function createGoogleCalendarEvent(input: {
   endsAt: string
   timezone: string
   attendeeEmails?: string[]
+  createMeet?: boolean
 }) {
   const status = await getGoogleIntegrationStatus()
   if (status.connected) {
     const result = await unifiedGoogleFetch('api/google/calendar/events', input)
     return { connected: true, event: result.event as CalendarEvent, meetingUri: result.meetingUri as string | undefined }
   }
-  const legacyStatus = await getGoogleCalendarStatus()
-  if (!legacyStatus.connected) return { connected: false, event: null, meetingUri: undefined }
-  const response = await blink.connectors.execute('google_calendar', { method: '/events', http_method: 'POST', params: { summary: input.summary, description: input.description, start: { dateTime: input.startsAt, timeZone: input.timezone }, end: { dateTime: input.endsAt, timeZone: input.timezone }, attendees: (input.attendeeEmails || []).filter(Boolean).map(email => ({ email })), sendUpdates: 'all', reminders: { useDefault: true } } })
-  return { connected: true, event: response.data as CalendarEvent, meetingUri: conferenceUri(response.data as CalendarEvent) }
+  return { connected: false, event: null, meetingUri: undefined }
 }
