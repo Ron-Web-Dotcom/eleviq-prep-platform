@@ -20,27 +20,42 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
   const [signedIn, setSignedIn] = useState(false)
   const [redirecting, setRedirecting] = useState(false)
 
-  useEffect(() => blink.auth.onAuthStateChanged((state) => {
-    if (state.isLoading) return
-    if (!state.user) {
-      setSignedIn(false)
+  useEffect(() => {
+    let active = true
+    const fallback = window.setTimeout(() => {
+      if (active) {
+        setSignedIn(false)
+        setLoading(false)
+      }
+    }, 8000)
+    const unsubscribe = blink.auth.onAuthStateChanged((state) => {
+      if (state.isLoading) return
+      window.clearTimeout(fallback)
+      if (!state.user) {
+        setSignedIn(false)
+        setLoading(false)
+        return
+      }
+      if (state.user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com') {
+        void (async () => {
+          try {
+            await blink.auth.signOut()
+          } finally {
+            setSignedIn(false)
+            setLoading(false)
+          }
+        })()
+        return
+      }
+      setSignedIn(true)
       setLoading(false)
-      return
+    })
+    return () => {
+      active = false
+      window.clearTimeout(fallback)
+      unsubscribe()
     }
-    if (state.user.email?.toLowerCase().split('@')[1] !== 'eleviqprep.com') {
-      void (async () => {
-        try {
-          await blink.auth.signOut()
-        } finally {
-          setSignedIn(false)
-          setLoading(false)
-        }
-      })()
-      return
-    }
-    setSignedIn(true)
-    setLoading(false)
-  }), [])
+  }, [])
 
   useEffect(() => {
     if (!loading && !signedIn && !redirecting) {
