@@ -64,7 +64,8 @@ app.post('/api/contact', async (c) => {
   try {
     await blink.notifications.email({
       to: 'info@eleviqprep.com',
-      from: 'no-reply@eleviqprep.com',
+      // Contact form submissions use the project's default verified sender.
+      // The visitor's address is the reply target, not an unverified sender.
       replyTo: email,
       subject: `${programInterest || 'Website'} inquiry from ${name}`,
       text: emailText,
@@ -201,6 +202,7 @@ app.post('/api/auth/password-link', async (c) => {
     const resetUrl = `${base}/create-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(email)}&recovery=forgot`
     await blink.notifications.email({
       to: email,
+      // Portal/recovery emails intentionally use the verified ELEVIQ sender.
       from: 'no-reply@eleviqprep.com',
       replyTo: 'info@eleviqprep.com',
       subject: 'Create a new ELEVIQ Prep password',

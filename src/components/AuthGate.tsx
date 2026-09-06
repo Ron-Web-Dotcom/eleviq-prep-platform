@@ -88,9 +88,10 @@ function RoleContent({ children }: { children: React.ReactNode }) {
         setLoading(false)
         return
       }
-      if (checkedUserId.current === state.user.id) return
-      checkedUserId.current = state.user.id
-      const cachedAccess = getCachedAdminAccess(state.user.id)
+      const userId = state.user.id
+      if (checkedUserId.current === userId) return
+      checkedUserId.current = userId
+      const cachedAccess = getCachedAdminAccess(userId)
       if (cachedAccess) {
         setAllowed(cachedAccess.authorized)
         setLoading(false)
@@ -98,7 +99,7 @@ function RoleContent({ children }: { children: React.ReactNode }) {
       void (async () => {
         try {
           setPermissionError('')
-          const access = await checkAdminAccess(state.user.id)
+          const access = await checkAdminAccess(userId)
           if (active) setAllowed(access.authorized)
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : 'Admin access could not be verified.'
