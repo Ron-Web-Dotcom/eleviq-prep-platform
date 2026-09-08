@@ -42,17 +42,35 @@ function AuthBrandPanel() {
 }
 
 function StudentGoogleEntry({ nextPath, busy, setBusy, error, setError, notice }: { nextPath: string; busy: boolean; setBusy: (value: boolean) => void; error: string; setError: (value: string) => void; notice: string }) {
-  useEffect(() => {
-    return blink.auth.onAuthStateChanged(state => {
-      if (!state.isLoading && state.isAuthenticated) {
-        void startGoogleIntegration('/app').catch(cause => setError(cause instanceof Error ? cause.message : 'Google connection could not start.'))
-      }
-    })
-  }, [setError])
   const signIn = async () => {
     setError(''); setBusy(true)
-    try { await blink.auth.signInWithGoogle() } catch (cause) { setBusy(false); setError(cause instanceof Error ? cause.message : 'Google sign-in could not start. Please try again.') }
+    try {
+      // The Google sign-in redirect returns to this page first. Only after the
+      // Blink session exists can the backend safely issue the separate Google
+      // Classroom / Calendar consent URL for the student's personal account.
+      await blink.auth.signInWithGoogle()
+    } catch (cause) {
+      setBusy(false)
+      setError(cause instanceof Error ? cause.message : 'Google sign-in could not start. Please try again.')
+    }
   }
+  useEffect(() => {
+    let active = true
+    const unsubscribe = blink.auth.onAuthStateChanged(state => {
+      if (!state.isLoading && state.isAuthenticated) {
+        void startGoogleIntegration(nextPath).catch(cause => {
+          if (active) {
+            setBusy(false)
+            setError(cause instanceof Error ? cause.message : 'Google connection could not start.')
+          }
+        })
+      }
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [nextPath, setBusy, setError])
   return <div className="mt-8 space-y-4"><div className="rounded-xl border border-primary/15 bg-secondary/45 p-4"><p className="text-sm font-semibold text-primary">Use your personal Google account</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Students enter ELEVIQ with Google, then connect Classroom, Calendar, and Meet from the learning workspace. No ELEVIQ password is needed here.</p></div>{error && <p role="alert" className="rounded-xl border border-destructive/25 bg-destructive/10 p-3 text-xs leading-5 text-destructive">{error}</p>}{notice && <p role="status" className="rounded-xl bg-secondary p-3 text-xs leading-5 text-primary">{notice}</p>}<button type="button" onClick={() => void signIn()} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md transition-transform hover:-translate-y-0.5 hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60"><Globe2 className="h-4 w-4" />{busy ? 'Opening Google…' : 'Continue with Google'}</button><p className="text-center text-[11px] leading-5 text-muted-foreground">You will return to ELEVIQ at {nextPath === '/app' ? 'your student workspace' : 'your requested workspace'} after sign-in.</p></div>
 }
 

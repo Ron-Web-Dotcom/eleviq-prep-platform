@@ -31,18 +31,32 @@ export type IntegrationStatus = {
   }
 }
 
+type FunctionEnvelope = { data?: unknown; error?: string; message?: string }
+
+// Older and newer Blink function clients expose backend JSON slightly differently.
+// Normalize both shapes so a successful backend response is not mistaken for an
+// empty payload in the student login flow.
+const unwrapFunctionResponse = <T,>(value: unknown): T => {
+  if (value && typeof value === 'object' && 'data' in value) {
+    const envelope = value as FunctionEnvelope
+    if (envelope.error) throw new Error(envelope.error)
+    return envelope.data as T
+  }
+  return value as T
+}
+
 export async function getGoogleIntegrationStatus(): Promise<IntegrationStatus> {
   const response = await blink.functions.invoke('api/google/integration/status')
-  return response as IntegrationStatus
+  return unwrapFunctionResponse<IntegrationStatus>(response)
 }
 
 export async function startGoogleIntegration(returnTo?: string) {
   const token = await blink.auth.getValidToken()
   if (!token) throw new Error('Your ELEVIQ session has expired. Please sign in again.')
-  const response = await blink.functions.invoke('api/google/integration/start', {
+  const response = unwrapFunctionResponse<{ authorizationUrl?: string; error?: string }>(await blink.functions.invoke('api/google/integration/start', {
     body: { origin: window.location.origin, returnTo: returnTo || `${window.location.pathname}${window.location.search}` },
-  }) as { authorizationUrl?: string }
-  if (!response.authorizationUrl) throw new Error('Google authorization could not be started.')
+  }))
+  if (!response.authorizationUrl) throw new Error(response.error || 'Google authorization could not be started.')
   window.location.assign(response.authorizationUrl)
 }
 
@@ -51,12 +65,12 @@ export async function disconnectGoogleIntegration() {
 }
 
 export async function fetchGoogleClassroomCourses() {
-  const response = await blink.functions.invoke('api/google/classroom/courses', { body: {} }) as { courses?: unknown[] }
+  const response = unwrapFunctionResponse<{ courses?: unknown[] }>(await blink.functions.invoke('api/google/classroom/courses', { body: {} }))
   return Array.isArray(response.courses) ? response.courses as ClassroomCourse[] : []
 }
 
 export async function fetchGoogleClassroomWork(courseId: string) {
-  const response = await blink.functions.invoke('api/google/classroom/coursework', { body: { courseId } }) as { coursework?: unknown[]; items?: unknown[] }
+  const response = unwrapFunctionResponse<{ coursework?: unknown[]; items?: unknown[] }>(await blink.functions.invoke('api/google/classroom/coursework', { body: { courseId } }))
   const items = response.coursework || response.items
   return Array.isArray(items) ? items as ClassroomWork[] : []
 }
@@ -85,7 +99,7 @@ export async function getGoogleCalendarStatus() {
 
 const unifiedGoogleFetch = async (path: string, body?: Record<string, unknown>) => {
   const response = await blink.functions.invoke(path, body ? { body } : undefined)
-  return response as unknown as Record<string, unknown>
+  return unwrapFunctionResponse<Record<string, unknown>>(response)
 }
 
 const conferenceUri = (event: CalendarEvent) => event.hangoutLink || event.conferenceData?.entryPoints?.find(point => point.entryPointType === 'video')?.uri
