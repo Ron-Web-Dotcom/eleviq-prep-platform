@@ -17,10 +17,8 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as StudentPortalRouteImport } from './routes/student-portal'
 import { Route as TermsRouteImport } from './routes/terms'
-import { Route as TestModeRouteImport } from './routes/test-mode'
 import { Route as TutorRouteImport } from './routes/tutor'
 import { Route as AppIndexRouteImport } from './routes/app/index'
-import { Route as AppTestModeRouteImport } from './routes/app/test-mode'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -62,11 +60,6 @@ const TermsRoute = TermsRouteImport.update({
   path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TestModeRoute = TestModeRouteImport.update({
-  id: '/test-mode',
-  path: '/test-mode',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const TutorRoute = TutorRouteImport.update({
   id: '/tutor',
   path: '/tutor',
@@ -75,11 +68,6 @@ const TutorRoute = TutorRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppTestModeRoute = AppTestModeRouteImport.update({
-  id: '/test-mode',
-  path: '/test-mode',
   getParentRoute: () => AppRoute,
 } as any)
 
@@ -92,9 +80,7 @@ export interface FileRoutesByFullPath {
   '/privacy': typeof PrivacyRoute
   '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
-  '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
-  '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRoutesByTo {
@@ -105,9 +91,7 @@ export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
   '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
-  '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
-  '/app/test-mode': typeof AppTestModeRoute
   '/app': typeof AppIndexRoute
 }
 export interface FileRoutesById {
@@ -120,9 +104,7 @@ export interface FileRoutesById {
   '/privacy': typeof PrivacyRoute
   '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
-  '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
-  '/app/test-mode': typeof AppTestModeRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
@@ -136,9 +118,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/student-portal'
     | '/terms'
-    | '/test-mode'
     | '/tutor'
-    | '/app/test-mode'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -149,9 +129,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/student-portal'
     | '/terms'
-    | '/test-mode'
     | '/tutor'
-    | '/app/test-mode'
     | '/app'
   id:
     | '__root__'
@@ -163,9 +141,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/student-portal'
     | '/terms'
-    | '/test-mode'
     | '/tutor'
-    | '/app/test-mode'
     | '/app/'
   fileRoutesById: FileRoutesById
 }
@@ -178,7 +154,6 @@ export interface RootRouteChildren {
   PrivacyRoute: typeof PrivacyRoute
   StudentPortalRoute: typeof StudentPortalRoute
   TermsRoute: typeof TermsRoute
-  TestModeRoute: typeof TestModeRoute
   TutorRoute: typeof TutorRoute
 }
 
@@ -240,13 +215,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/test-mode': {
-      id: '/test-mode'
-      path: '/test-mode'
-      fullPath: '/test-mode'
-      preLoaderRoute: typeof TestModeRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/tutor': {
       id: '/tutor'
       path: '/tutor'
@@ -261,23 +229,14 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/test-mode': {
-      id: '/app/test-mode'
-      path: '/test-mode'
-      fullPath: '/app/test-mode'
-      preLoaderRoute: typeof AppTestModeRouteImport
-      parentRoute: typeof AppRoute
-    }
   }
 }
 
 interface AppRouteChildren {
-  AppTestModeRoute: typeof AppTestModeRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
-  AppTestModeRoute: AppTestModeRoute,
   AppIndexRoute: AppIndexRoute,
 }
 
@@ -292,7 +251,6 @@ const rootRouteChildren: RootRouteChildren = {
   PrivacyRoute: PrivacyRoute,
   StudentPortalRoute: StudentPortalRoute,
   TermsRoute: TermsRoute,
-  TestModeRoute: TestModeRoute,
   TutorRoute: TutorRoute,
 }
 export const routeTree = rootRouteImport
