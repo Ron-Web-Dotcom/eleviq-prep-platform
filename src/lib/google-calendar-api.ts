@@ -28,6 +28,8 @@ export type IntegrationStatus = {
     classroomSubmissionsRead?: boolean
     classroomCourseworkCreate?: boolean
     broaderStudentData?: boolean
+    sharedClassroomAvailable?: boolean
+    sharedClassroomEmail?: string
   }
 }
 
@@ -65,12 +67,14 @@ export async function disconnectGoogleIntegration() {
 }
 
 export async function fetchGoogleClassroomCourses() {
-  const response = unwrapFunctionResponse<{ courses?: unknown[] }>(await blink.functions.invoke('api/google/classroom/courses', { body: {} }))
+  const response = unwrapFunctionResponse<{ courses?: unknown[]; error?: string }>(await blink.functions.invoke('api/google/classroom/courses', { body: {} }))
+  if (response.error) throw new Error(response.error)
   return Array.isArray(response.courses) ? response.courses as ClassroomCourse[] : []
 }
 
 export async function fetchGoogleClassroomWork(courseId: string) {
-  const response = unwrapFunctionResponse<{ coursework?: unknown[]; items?: unknown[] }>(await blink.functions.invoke('api/google/classroom/coursework', { body: { courseId } }))
+  const response = unwrapFunctionResponse<{ coursework?: unknown[]; items?: unknown[]; error?: string }>(await blink.functions.invoke('api/google/classroom/coursework', { body: { courseId } }))
+  if (response.error) throw new Error(response.error)
   const items = response.coursework || response.items
   return Array.isArray(items) ? items as ClassroomWork[] : []
 }
@@ -82,7 +86,8 @@ export async function fetchGoogleClassroomSubmission(courseId: string, courseWor
   const backendId = projectId.slice(-8)
   const response = await fetch(`https://${backendId}.backend.blink.new/api/google/classroom/coursework/${encodeURIComponent(courseWorkId)}/submissions?courseId=${encodeURIComponent(courseId)}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!response.ok) throw new Error('Submission status could not be loaded.')
-  const data = await response.json() as { submission?: ClassroomSubmission; submissions?: ClassroomSubmission[] }
+  const data = await response.json() as { submission?: ClassroomSubmission; submissions?: ClassroomSubmission[]; error?: string }
+  if (data.error) throw new Error(data.error)
   return data.submission || data.submissions?.[0]
 }
 

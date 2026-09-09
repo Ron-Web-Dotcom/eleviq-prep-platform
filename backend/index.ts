@@ -105,6 +105,27 @@ const googleRoleCapabilities = async (blink: ReturnType<typeof getBlink>, userId
   return { role: admin ? 'admin' : tutor ? 'tutor' : 'student', capabilities: { calendarRead: true, calendarCreate: true, meetCreate: true, classroomCoursesRead: true, classroomCourseworkRead: true, classroomSubmissionsRead: true, classroomCourseworkCreate: tutor, broaderStudentData: admin } }
 }
 
+// Classroom is owned by one verified ELEVIQ administrator. Students use that
+// teacher connection for read-only course and coursework access; their personal
+// Google connection remains available for their own Calendar and Meet actions.
+const sharedClassroomOwner = async (blink: ReturnType<typeof getBlink>) => {
+  const result = await blink.db.sql(`SELECT u.id AS user_id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id JOIN google_integrations gi ON gi.user_id = u.id WHERE u.email_verified = 1 AND r.name IN (?, ?, ?) ORDER BY CASE r.name WHEN 'system_admin' THEN 1 WHEN 'super_admin' THEN 2 ELSE 3 END, gi.updated_at DESC LIMIT 1`, ['system_admin', 'super_admin', 'admin'])
+  return (result.rows[0] as { userId?: string } | undefined)?.userId || null
+}
+
+const studentHasClassroomAccess = async (blink: ReturnType<typeof getBlink>, env: Record<string, string>, ownerId: string, studentEmail: string, courseId: string) => {
+  if (!studentEmail) return false
+  const response = await googleRequest(blink, env, ownerId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/students?studentId=${encodeURIComponent(studentEmail)}&pageSize=10`)
+  return response.ok
+}
+
+const classroomStudentUserId = async (blink: ReturnType<typeof getBlink>, env: Record<string, string>, ownerId: string, studentEmail: string, courseId: string) => {
+  const response = await googleRequest(blink, env, ownerId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/students?studentId=${encodeURIComponent(studentEmail)}&pageSize=10`)
+  if (!response.ok) return null
+  const data = await response.json().catch(() => ({})) as { students?: Array<{ userId?: string }> }
+  return data.students?.[0]?.userId || null
+}
+
 const eleviqAttendeeEmails = (value: unknown) => {
   if (value === undefined) return [] as string[]
   if (!Array.isArray(value)) throw new Error('attendeeEmails must be an array.')
@@ -148,7 +169,10 @@ app.post('/api/google/integration/status', async (c) => {
     const result = await blink.db.sql('SELECT google_email, scopes FROM google_integrations WHERE user_id = ? LIMIT 1', [auth.userId])
     const row = result.rows[0] as { googleEmail?: string; scopes?: string } | undefined
     const permissions = await googleRoleCapabilities(blink, auth.userId)
-    return c.json({ connected: Boolean(row), provider: row ? 'google' : undefined, email: row?.googleEmail, scopes: parseScopes(row?.scopes), role: permissions.role, capabilities: permissions.capabilities })
+    const classroomOwnerId = await sharedClassroomOwner(blink)
+    const classroomOwnerResult = classroomOwnerId ? await blink.db.sql('SELECT google_email FROM google_integrations WHERE user_id = ? LIMIT 1', [classroomOwnerId]) : null
+    const classroomOwner = classroomOwnerResult?.rows[0] as { googleEmail?: string } | undefined
+    return c.json({ connected: Boolean(row), provider: row ? 'google' : undefined, email: row?.googleEmail, scopes: parseScopes(row?.scopes), role: permissions.role, capabilities: { ...permissions.capabilities, sharedClassroomAvailable: Boolean(classroomOwnerId), sharedClassroomEmail: classroomOwner?.googleEmail } })
   } catch (error) {
     console.error('Google integration status failed', error)
     return c.json({ error: 'Google integration status is temporarily unavailable.' }, 503)
@@ -264,10 +288,29 @@ app.post('/api/google/classroom/courses', async (c) => {
   try {
     const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
     if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
-    const response = await googleRequest(blink, env, auth.userId, 'https://classroom.googleapis.com/v1/courses?pageSize=50')
-    const data = await response.json().catch(() => ({}))
+    const permissions = await googleRoleCapabilities(blink, auth.userId)
+    const ownerId = permissions.role === 'student' ? await sharedClassroomOwner(blink) : auth.userId
+    if (!ownerId) return c.json({ error: 'An ELEVIQ administrator has not connected the shared Google Classroom yet.' }, 503)
+    const response = await googleRequest(blink, env, ownerId, 'https://classroom.googleapis.com/v1/courses?pageSize=50')
+    const data = await response.json().catch(() => ({})) as Record<string, unknown>
     if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502)
-    return c.json(data)
+
+    // Students use the verified ELEVIQ teacher connection. Filter the teacher's
+    // course list by the student's actual Classroom roster membership so one
+    // student cannot discover another student's classes.
+    if (permissions.role === 'student') {
+      const userResult = await blink.db.sql('SELECT email FROM users WHERE id = ? LIMIT 1', [auth.userId])
+      const studentEmail = (userResult.rows[0] as { email?: string } | undefined)?.email || ''
+      const allCourses = Array.isArray(data.courses) ? data.courses as Array<Record<string, unknown>> : []
+      const enrolled = await Promise.all(allCourses.map(async course => {
+        const id = typeof course.id === 'string' ? course.id : ''
+        return id && await studentHasClassroomAccess(blink, env, ownerId, studentEmail, id) ? course : null
+      }))
+      data.courses = enrolled.filter((course): course is Record<string, unknown> => Boolean(course))
+      delete data.nextPageToken
+    }
+
+    return c.json({ ...data, shared: ownerId !== auth.userId })
   } catch (error) {
     console.error('Google Classroom request failed', error)
     return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503)
@@ -292,7 +335,23 @@ app.get('/api/google/classroom/courses/:courseId', async (c) => {
 
 app.get('/api/google/classroom/courses/:courseId/coursework', async (c) => {
   const env = c.env as Record<string, string>; const blink = getBlink(env)
-  try { const auth = await blink.auth.verifyToken(c.req.header('Authorization')); if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401); const response = await googleRequest(blink, env, auth.userId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(clean(c.req.param('courseId'), 200))}/courseWork?pageSize=100`); const data = await response.json().catch(() => ({})); if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502); return c.json(data) } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
+  try {
+    const auth = await blink.auth.verifyToken(c.req.header('Authorization'))
+    if (!auth.valid || !auth.userId) return c.json({ error: 'A valid ELEVIQ session is required.' }, 401)
+    const permissions = await googleRoleCapabilities(blink, auth.userId)
+    const ownerId = permissions.role === 'student' ? await sharedClassroomOwner(blink) : auth.userId
+    if (!ownerId) return c.json({ error: 'An ELEVIQ administrator has not connected the shared Google Classroom yet.' }, 503)
+    const courseId = clean(c.req.param('courseId'), 200)
+    if (permissions.role === 'student') {
+      const user = await blink.db.sql('SELECT email FROM users WHERE id = ? LIMIT 1', [auth.userId])
+      const email = (user.rows[0] as { email?: string } | undefined)?.email || ''
+      if (!(await studentHasClassroomAccess(blink, env, ownerId, email, courseId))) return c.json({ error: 'You are not enrolled in this ELEVIQ Google Classroom course.' }, 403)
+    }
+    const response = await googleRequest(blink, env, ownerId, `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/courseWork?pageSize=100`)
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) return c.json({ error: googleApiError(response, 'Classroom') }, response.status === 401 ? 401 : 502)
+    return c.json(data)
+  } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
 })
 
 app.post('/api/google/classroom/coursework', async (c) => {
@@ -303,6 +362,13 @@ app.post('/api/google/classroom/coursework', async (c) => {
     const permissions = await googleRoleCapabilities(blink, auth.userId)
     const list = !body.title
     if (!list && !permissions.capabilities.classroomCourseworkCreate) return c.json({ error: 'Only tutors and administrators may create coursework.' }, 403)
+    const ownerId = list && permissions.role === 'student' ? await sharedClassroomOwner(blink) : auth.userId
+    if (!ownerId) return c.json({ error: 'An ELEVIQ administrator has not connected the shared Google Classroom yet.' }, 503)
+    if (list && permissions.role === 'student') {
+      const userResult = await blink.db.sql('SELECT email FROM users WHERE id = ? LIMIT 1', [auth.userId])
+      const studentEmail = (userResult.rows[0] as { email?: string } | undefined)?.email || ''
+      if (!(await studentHasClassroomAccess(blink, env, ownerId, studentEmail, courseId))) return c.json({ error: 'You are not enrolled in this ELEVIQ Google Classroom course.' }, 403)
+    }
     const workType = body.workType === 'MATERIAL' ? 'MATERIAL' : body.workType === 'QUIZ' ? 'QUIZ' : 'ASSIGNMENT'
     const endpoint = list ? 'courseWork' : workType === 'MATERIAL' ? 'courseWorkMaterials' : 'courseWork'
     const dueDateValue = clean(body.dueDate, 80)
@@ -311,7 +377,7 @@ app.post('/api/google/classroom/coursework', async (c) => {
     const dueTime = parsedDueDate && !Number.isNaN(parsedDueDate.getTime()) ? { hours: parsedDueDate.getHours(), minutes: parsedDueDate.getMinutes() } : undefined
     const url = `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(courseId)}/${endpoint}${list ? '?pageSize=100' : ''}`
     const payload = list ? undefined : JSON.stringify({ title: clean(body.title, 240), description: clean(body.description, 4000), ...(workType === 'MATERIAL' ? {} : { workType: workType === 'QUIZ' ? 'MULTIPLE_CHOICE_QUESTION' : 'ASSIGNMENT', state: 'PUBLISHED', ...(workType === 'QUIZ' ? { quizSettings: { isQuiz: true } } : {}), ...(dueDate ? { dueDate, dueTime } : {}) }) })
-    const response = await googleRequest(blink, env, auth.userId, url, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload } : {})
+    const response = await googleRequest(blink, env, ownerId, url, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload } : {})
     const data = await response.json().catch(() => ({})); return c.json(response.ok ? data : { error: googleApiError(response, 'Classroom') }, response.ok ? 200 : response.status === 401 ? 401 : 502)
   } catch (error) { return c.json({ error: error instanceof Error && error.message === 'GOOGLE_NOT_CONNECTED' ? 'Connect Google before using Classroom.' : 'Google Classroom is temporarily unavailable.' }, 503) }
 })
