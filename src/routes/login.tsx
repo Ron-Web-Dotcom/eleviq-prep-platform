@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, createFileRoute, useNavigate, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ArrowRight, Globe2, LockKeyhole, Mail, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
@@ -8,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { BlinkClientBoundary } from '@/components/BlinkClientBoundary'
 import { blink } from '@/blink/client'
 import { checkEmailLegitimacy, checkStudentLockout, recordStudentAuthAttempt, requestPasswordLink, resendVerificationEmail, verifyTemporaryPassword } from '@/lib/auth-security-api'
-import { startGoogleIntegration } from '@/lib/google-calendar-api'
 
 export const Route = createFileRoute('/login')({
   head: () => ({
@@ -42,36 +41,54 @@ function AuthBrandPanel() {
 }
 
 function StudentGoogleEntry({ nextPath, busy, setBusy, error, setError, notice }: { nextPath: string; busy: boolean; setBusy: (value: boolean) => void; error: string; setError: (value: string) => void; notice: string }) {
+  const startedRef = useRef(false)
+  const pendingKey = 'eleviq.pending-google-login'
+  const navigate = useNavigate()
+
+  const finishSignIn = () => {
+    if (startedRef.current) return
+    startedRef.current = true
+    window.sessionStorage.removeItem(pendingKey)
+    setBusy(false)
+    void navigate({ to: nextPath, replace: true })
+  }
+
   const signIn = async () => {
     setError(''); setBusy(true)
     try {
-      // The Google sign-in redirect returns to this page first. Only after the
-      // Blink session exists can the backend safely issue the separate Google
-      // Classroom / Calendar consent URL for the student's personal account.
+      // If the preview already has a valid session, do not start Google OAuth
+      // again. This prevents a second OAuth attempt from bouncing back to /.
+      if (blink.auth.isAuthenticated()) {
+        finishSignIn()
+        return
+      }
+      // Keep this marker through the Google callback so the listener can route
+      // the authenticated user to the portal after the session is hydrated.
+      window.sessionStorage.setItem(pendingKey, 'true')
       await blink.auth.signInWithGoogle()
+      if (!blink.auth.isAuthenticated()) throw new Error('Google sign-in did not create an ELEVIQ session.')
+      // Some browser popup flows resolve after tokens are stored but before the
+      // auth listener emits its next event, so complete the redirect directly.
+      finishSignIn()
     } catch (cause) {
+      window.sessionStorage.removeItem(pendingKey)
       setBusy(false)
       setError(cause instanceof Error ? cause.message : 'Google sign-in could not start. Please try again.')
     }
   }
+
   useEffect(() => {
-    let active = true
     const unsubscribe = blink.auth.onAuthStateChanged(state => {
-      if (!state.isLoading && state.isAuthenticated) {
-        void startGoogleIntegration(nextPath).catch(cause => {
-          if (active) {
-            setBusy(false)
-            setError(cause instanceof Error ? cause.message : 'Google connection could not start.')
-          }
-        })
-      }
+      if (state.isLoading || !state.isAuthenticated) return
+      finishSignIn()
     })
-    return () => {
-      active = false
-      unsubscribe()
-    }
-  }, [nextPath, setBusy, setError])
-  return <div className="mt-8 space-y-4"><div className="rounded-xl border border-primary/15 bg-secondary/45 p-4"><p className="text-sm font-semibold text-primary">Use your personal Google account</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Students enter ELEVIQ with Google, then connect Classroom, Calendar, and Meet from the learning workspace. No ELEVIQ password is needed here.</p></div>{error && <p role="alert" className="rounded-xl border border-destructive/25 bg-destructive/10 p-3 text-xs leading-5 text-destructive">{error}</p>}{notice && <p role="status" className="rounded-xl bg-secondary p-3 text-xs leading-5 text-primary">{notice}</p>}<button type="button" onClick={() => void signIn()} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md transition-transform hover:-translate-y-0.5 hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60"><Globe2 className="h-4 w-4" />{busy ? 'Opening Google…' : 'Continue with Google'}</button><p className="text-center text-[11px] leading-5 text-muted-foreground">You will return to ELEVIQ at {nextPath === '/app' ? 'your student workspace' : 'your requested workspace'} after sign-in.</p></div>
+    return unsubscribe
+    // The listener intentionally reads the current auth state after the OAuth
+    // callback; it must not be recreated on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextPath, navigate, setBusy])
+
+  return <div className="mt-8 space-y-4"><div className="rounded-xl border border-primary/15 bg-secondary/45 p-4"><p className="text-sm font-semibold text-primary">Sign in with your Google account</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Google sign-in opens your ELEVIQ student workspace. Once inside, you can separately connect Classroom, Calendar, and Meet permissions without getting stuck in the login callback.</p></div>{error && <p role="alert" className="rounded-xl border border-destructive/25 bg-destructive/10 p-3 text-xs leading-5 text-destructive">{error}</p>}{notice && <p role="status" className="rounded-xl bg-secondary p-3 text-xs leading-5 text-primary">{notice}</p>}<button type="button" onClick={() => void signIn()} disabled={busy} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md transition-transform hover:-translate-y-0.5 hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60"><Globe2 className="h-4 w-4" />{busy ? 'Opening Google…' : 'Continue with Google'}</button><p className="text-center text-[11px] leading-5 text-muted-foreground">After Google confirms your identity, you will return to {nextPath === '/app' ? 'your student workspace' : 'your requested workspace'}.</p></div>
 }
 
 function Login() {

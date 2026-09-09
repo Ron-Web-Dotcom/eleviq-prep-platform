@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { useEffect, useState } from 'react'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUpRight, BookOpen, BrainCircuit, Check, Clock3, Menu, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { blink } from '@/blink/client'
@@ -93,9 +93,22 @@ function ContactDialog({ initialProgram, onClose }: { initialProgram?: string; o
 }
 
 function Home() {
+  const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [selectedProgram, setSelectedProgram] = useState<string>()
+
+  useEffect(() => {
+    const pendingKey = 'eleviq.pending-google-login'
+    const unsubscribe = blink.auth.onAuthStateChanged(state => {
+      if (state.isLoading || !state.isAuthenticated) return
+      if (window.sessionStorage.getItem(pendingKey) !== 'true') return
+      window.sessionStorage.removeItem(pendingKey)
+      void navigate({ to: '/app', replace: true })
+    })
+    return unsubscribe
+  }, [navigate])
+
   const openContact = (program?: string) => { setSelectedProgram(program); setContactOpen(true) }
   const showComingSoon = (label: string) => toast.info(`${label} is coming soon.`, { description: 'Contact ELEVIQ and we will help you get started.' })
   const scrollToSection = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })

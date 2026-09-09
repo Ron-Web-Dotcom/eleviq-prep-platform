@@ -46,7 +46,7 @@ const unwrapFunctionResponse = <T,>(value: unknown): T => {
 }
 
 export async function getGoogleIntegrationStatus(): Promise<IntegrationStatus> {
-  const response = await blink.functions.invoke('api/google/integration/status')
+  const response = await blink.functions.invoke('api/google/integration/status', { body: {} })
   return unwrapFunctionResponse<IntegrationStatus>(response)
 }
 

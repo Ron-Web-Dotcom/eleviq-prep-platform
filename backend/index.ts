@@ -139,7 +139,7 @@ const formatLockout = (lockedUntil: string) => ({ locked: true, lockedUntil, mes
 
 app.get('/health', (c) => c.json({ ok: true }))
 
-app.get('/api/google/integration/status', async (c) => {
+app.post('/api/google/integration/status', async (c) => {
   const env = c.env as Record<string, string>
   const blink = getBlink(env)
   try {

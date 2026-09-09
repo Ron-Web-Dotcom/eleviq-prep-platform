@@ -15,6 +15,7 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as CreatePasswordRouteImport } from './routes/create-password'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as StudentPortalRouteImport } from './routes/student-portal'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as TestModeRouteImport } from './routes/test-mode'
 import { Route as TutorRouteImport } from './routes/tutor'
@@ -51,6 +52,11 @@ const PrivacyRoute = PrivacyRouteImport.update({
   path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StudentPortalRoute = StudentPortalRouteImport.update({
+  id: '/student-portal',
+  path: '/student-portal',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
@@ -84,6 +90,7 @@ export interface FileRoutesByFullPath {
   '/create-password': typeof CreatePasswordRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
@@ -96,6 +103,7 @@ export interface FileRoutesByTo {
   '/create-password': typeof CreatePasswordRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
@@ -110,6 +118,7 @@ export interface FileRoutesById {
   '/create-password': typeof CreatePasswordRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/student-portal': typeof StudentPortalRoute
   '/terms': typeof TermsRoute
   '/test-mode': typeof TestModeRoute
   '/tutor': typeof TutorRoute
@@ -125,6 +134,7 @@ export interface FileRouteTypes {
     | '/create-password'
     | '/login'
     | '/privacy'
+    | '/student-portal'
     | '/terms'
     | '/test-mode'
     | '/tutor'
@@ -137,6 +147,7 @@ export interface FileRouteTypes {
     | '/create-password'
     | '/login'
     | '/privacy'
+    | '/student-portal'
     | '/terms'
     | '/test-mode'
     | '/tutor'
@@ -150,6 +161,7 @@ export interface FileRouteTypes {
     | '/create-password'
     | '/login'
     | '/privacy'
+    | '/student-portal'
     | '/terms'
     | '/test-mode'
     | '/tutor'
@@ -164,6 +176,7 @@ export interface RootRouteChildren {
   CreatePasswordRoute: typeof CreatePasswordRoute
   LoginRoute: typeof LoginRoute
   PrivacyRoute: typeof PrivacyRoute
+  StudentPortalRoute: typeof StudentPortalRoute
   TermsRoute: typeof TermsRoute
   TestModeRoute: typeof TestModeRoute
   TutorRoute: typeof TutorRoute
@@ -211,6 +224,13 @@ declare module '@tanstack/react-router' {
       path: '/privacy'
       fullPath: '/privacy'
       preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/student-portal': {
+      id: '/student-portal'
+      path: '/student-portal'
+      fullPath: '/student-portal'
+      preLoaderRoute: typeof StudentPortalRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/terms': {
@@ -270,6 +290,7 @@ const rootRouteChildren: RootRouteChildren = {
   CreatePasswordRoute: CreatePasswordRoute,
   LoginRoute: LoginRoute,
   PrivacyRoute: PrivacyRoute,
+  StudentPortalRoute: StudentPortalRoute,
   TermsRoute: TermsRoute,
   TestModeRoute: TestModeRoute,
   TutorRoute: TutorRoute,
