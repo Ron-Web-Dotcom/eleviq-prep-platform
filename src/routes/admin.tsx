@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import {
   Activity, ArrowUpRight, Bell, BookOpen, CalendarDays, CheckCircle2,
   ChevronRight, ClipboardList, Database, FileText, HeartPulse, LayoutDashboard, LogOut,
@@ -19,7 +19,12 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 
 export const Route = createFileRoute('/admin')({
-  head: () => ({ meta: [{ title: 'Admin Control Center · ELEVIQ Prep' }, { name: 'description', content: 'ELEVIQ Prep operations command center for authorized administrators.' }] }),
+  // Keep a hard redirect for old bookmarks and hand-entered URLs. The admin
+  // console must never render merely because someone knows its route.
+  beforeLoad: () => {
+    throw redirect({ to: '/' })
+  },
+  head: () => ({ meta: [{ title: 'ELEVIQ Prep' }, { name: 'description', content: 'ELEVIQ Prep.' }] }),
   component: AdminConsole,
 })
 

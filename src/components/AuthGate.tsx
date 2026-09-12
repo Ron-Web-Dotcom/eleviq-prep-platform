@@ -135,8 +135,8 @@ function RoleContent({ children }: { children: React.ReactNode }) {
         <div className="max-w-md rounded-2xl border border-border bg-card p-8 shadow-md">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-accent">Restricted area</p>
           <h1 className="mt-3 text-2xl font-bold text-primary">System admin access required</h1>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">{permissionError || 'This console is separate from the student portal. Sign in with an authorized ELEVIQ system administrator account.'}</p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3"><a href="/login?next=%2Fadmin" className="inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Administrator sign in</a><a href="/app" className="inline-flex rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary hover:bg-secondary">Return to student portal</a></div>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">{permissionError || 'This area is restricted to authorized ELEVIQ staff accounts.'}</p>
+          <div className="mt-6 flex justify-center"><a href="/" className="inline-flex rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary hover:bg-secondary">Return to ELEVIQ Prep</a></div>
         </div>
       </div>
     )

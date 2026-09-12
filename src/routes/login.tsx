@@ -13,14 +13,19 @@ export const Route = createFileRoute('/login')({
   head: () => ({
     meta: [
       { title: 'Sign in · ELEVIQ Prep' },
-      { name: 'description', content: 'Secure email sign-in for the ELEVIQ Prep student and admin portals.' },
+      { name: 'description', content: 'Secure email sign-in for ELEVIQ Prep.' },
     ],
   }),
   component: LoginRoute,
 })
 
 type Mode = 'signin' | 'access' | 'forgot'
-const safeNext = (value: string | undefined) => value?.startsWith('/') && !value.startsWith('//') ? value : '/app'
+const restrictedPrefixes = ['/app', '/admin', '/student-portal']
+const safeNext = (value: string | undefined) => {
+  if (!value?.startsWith('/') || value.startsWith('//')) return '/'
+  if (restrictedPrefixes.some(prefix => value === prefix || value.startsWith(`${prefix}/`))) return '/'
+  return value
+}
 
 const recordAuthAttempt = async (email: string, result: 'success' | 'failure', reason: string) => {
   try {
@@ -105,11 +110,11 @@ function Login() {
   const [lockout, setLockout] = useState<{ locked: boolean; lockedUntil?: string; message?: string }>({ locked: false })
   const access = mode === 'access'
   const nextPath = safeNext(search.next)
-  const adminIntent = nextPath === '/admin'
+  const adminIntent = false
   const studentLockoutActive = lockout.locked && !adminIntent
 
   const checkLockout = async (candidate: string) => {
-    if (adminIntent || !candidate) return false
+    if (!candidate) return false
     try {
       const status = await checkStudentLockout(candidate)
       setLockout(status)
@@ -133,7 +138,7 @@ function Login() {
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
     if (!validEmail) return setError('Enter a valid email address.')
     if (normalized.split('@')[1] !== 'eleviqprep.com') return setError('ELEVIQ accounts must use an @eleviqprep.com email address.')
-    if (mode === 'signin' && !emailConfirmed && !adminIntent) {
+    if (mode === 'signin' && !emailConfirmed) {
       setBusy(true)
       try {
         if (await checkLockout(normalized)) return
@@ -191,7 +196,7 @@ function Login() {
           setError(auditRecorded ? 'We could not send an access link right now. Please try again.' : 'We could not complete the secure request. Please try again.')
         }
       } else {
-        if (!adminIntent) {
+        {
           const currentLockout = await checkStudentLockout(normalized)
           setLockout(currentLockout)
           if (currentLockout.locked) {
@@ -207,9 +212,7 @@ function Login() {
         }
         try {
           await blink.auth.signInWithEmail(normalized, password)
-          if (!adminIntent) {
-            try { await recordStudentAuthAttempt(normalized, 'success', 'sign_in') } catch { console.warn('Student auth security reset unavailable') }
-          }
+          try { await recordStudentAuthAttempt(normalized, 'success', 'sign_in') } catch { console.warn('Auth security reset unavailable') }
           const auditRecorded = await recordAuthAttempt(normalized, 'success', 'sign_in')
           if (!auditRecorded) {
             await blink.auth.signOut()
@@ -222,7 +225,7 @@ function Login() {
           await navigate({ to: nextPath })
         } catch {
           let lockoutStatus: { locked: boolean; lockedUntil?: string; message?: string } = { locked: false }
-          if (!adminIntent) {
+          {
             try {
               lockoutStatus = await recordStudentAuthAttempt(normalized, 'failure', 'sign_in_failed')
               setLockout(lockoutStatus)
@@ -230,7 +233,7 @@ function Login() {
               // Keep the normal authentication error if the security service is unavailable.
             }
           }
-          const temporaryPasswordAttempt = !adminIntent && (lockoutStatus.locked || lockout.locked) && password.length > 0
+          const temporaryPasswordAttempt = (lockoutStatus.locked || lockout.locked) && password.length > 0
           if (temporaryPasswordAttempt) {
             try {
               const recovery = await verifyTemporaryPassword(normalized, password)
@@ -248,8 +251,8 @@ function Login() {
 
   const title = mode === 'forgot' ? 'Reset your password' : access ? 'Request secure access' : 'Prepare with purpose.'
   const subtitle = mode === 'forgot' ? 'We’ll help you get back into your workspace.' : access ? 'Use your ELEVIQ email to receive a secure sign-in link.' : 'Sign in to continue'
-  const entryLabel = adminIntent ? 'Staff and administrator entry' : 'Student entry'
-  const entryDescription = adminIntent ? 'Use your ELEVIQ staff account. Your assigned role determines whether the tutor or admin workspace opens.' : 'Sign in with your ELEVIQ account, then connect your personal Google account inside the student portal.'
+  const entryLabel = 'Account sign-in'
+  const entryDescription = 'Use your ELEVIQ account to continue securely.'
   const googleNotice = search.google_connected === 'true' ? 'Google is connected. Welcome to your student workspace.' : ''
   const googleError = search.google_error ? decodeURIComponent(search.google_error) : ''
   return <main className="relative min-h-dvh overflow-hidden bg-background px-4 py-6 text-foreground sm:px-6 lg:bg-primary"><div className="pointer-events-none absolute -left-24 top-10 h-64 w-64 rounded-full bg-accent/15 blur-3xl lg:hidden" /><div className="relative mx-auto grid min-h-[calc(100dvh-3rem)] max-w-6xl items-center gap-8 lg:grid-cols-[1fr_380px] xl:gap-12"><AuthBrandPanel /><section className="w-full animate-fade-in rounded-[2rem] border border-border bg-card p-6 text-card-foreground shadow-lg sm:p-8"><div className="mb-6"><Link to="/" aria-label="Return to ELEVIQ home page" className="group inline-flex items-center gap-2 rounded-md px-1.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-secondary hover:text-primary"><ArrowLeft className="h-4 w-4 transition-transform duration-200 group-hover:-translate-x-0.5" /> Back to home</Link></div><div className="mb-8 flex items-center gap-3 lg:hidden"><div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl bg-secondary p-1.5"><img src="/brand/eleviq-logo.png" alt="ELEVIQ Prep" className="h-full w-full object-contain" /></div><div><p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">ELEVIQ / PREP</p><p className="mt-1 text-xs text-muted-foreground">Secure workspace access</p></div></div><div><p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">Secure entry</p><h2 className="mt-3 font-serif text-3xl font-bold tracking-tight text-primary">{title}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{subtitle}</p><div className="mt-4 rounded-xl border border-primary/15 bg-secondary/45 p-3"><p className="text-xs font-bold uppercase tracking-[0.12em] text-primary">{entryLabel}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{entryDescription}</p></div></div>{adminIntent ? <form onSubmit={submit} className="mt-8 space-y-4">{mode === 'signin' && !emailConfirmed && !adminIntent && <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground"><span className="h-px flex-1 bg-border" /><span>Account email</span><span className="h-px flex-1 bg-border" /></div>}<div><Label htmlFor="email" className="mb-2 block text-xs font-semibold text-primary">ELEVIQ email address</Label><div className="relative"><Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input id="email" type="email" value={email} onChange={e => { setEmail(e.target.value); setEmailConfirmed(false); setEmailCheck('') }} className="h-11 rounded-xl border-input bg-background pl-10 text-sm text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" /></div>{adminIntent && <p className="mt-2 text-xs leading-5 text-muted-foreground">Your account role determines which ELEVIQ workspace opens after sign-in.</p>}{emailCheck && <p className="mt-2 text-xs leading-5 text-muted-foreground" role="status">{emailCheck}</p>}</div>{mode === 'signin' && (emailConfirmed || adminIntent) && <div><div className="flex items-center justify-between"><Label htmlFor="password" className="text-xs font-semibold text-primary">Password</Label>{!adminIntent && <button type="button" onClick={() => setMode('forgot')} className="text-xs font-semibold text-primary underline-offset-4 hover:text-accent hover:underline">Forgot password?</button>}</div><div className="relative mt-2"><LockKeyhole className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} className="h-11 rounded-xl border-input bg-background pl-10 text-sm text-foreground focus-visible:ring-2 focus-visible:ring-ring" required /></div>{!adminIntent && <button type="button" onClick={() => { setEmailConfirmed(false); setPassword('') }} className="mt-2 text-xs text-muted-foreground underline-offset-4 hover:text-primary hover:underline">Use a different email</button>}</div>}{mode === 'forgot' && <p className="rounded-xl bg-secondary p-3 text-xs leading-5 text-muted-foreground">Enter the verified ELEVIQ email already in our system. We’ll email a secure link so you can choose a new password.</p>}{mode === 'forgot' && <button type="button" onClick={() => void resendVerificationEmail(email.trim().toLowerCase()).then(() => toast.success('Verification email requested', { description: 'If that address has an account, a verification link is on its way.' })).catch(cause => setError(cause instanceof Error ? cause.message : 'We could not resend the verification email.'))} className="text-left text-xs font-semibold text-primary underline-offset-4 hover:text-accent hover:underline">Need to verify this email? Resend verification</button>}{error && <p role="alert" className="rounded-xl border border-destructive/25 bg-destructive/10 p-3 text-xs leading-5 text-destructive">{error}</p>}{studentLockoutActive && <p className="rounded-xl border border-accent/30 bg-accent/10 p-3 text-xs leading-5 text-primary"><strong>Temporary password required.</strong> Check your email for the one-time password sent by an ELEVIQ administrator, then enter it above. You will be required to choose a new password.</p>}<Button disabled={busy} className="h-11 w-full rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-md shadow-primary/15 transition-transform hover:-translate-y-0.5 hover:bg-primary/90 active:translate-y-0">{busy ? 'Please wait…' : mode === 'forgot' ? 'Send reset link' : access ? 'Email secure access link' : studentLockoutActive ? 'Use temporary password' : emailConfirmed || adminIntent ? 'Sign in securely' : 'Continue with email'} {!busy && <ArrowRight className="h-4 w-4" />}</Button></form> : <StudentGoogleEntry nextPath={nextPath} busy={busy} setBusy={setBusy} error={error || googleError} setError={setError} notice={googleNotice} />}{adminIntent && <div className="mt-7 border-t border-border pt-5 text-center text-xs text-muted-foreground">{mode === 'signin' ? <>Need an account? <button type="button" onClick={() => { setMode('access'); setEmailConfirmed(false) }} className="font-semibold text-primary underline-offset-4 hover:text-accent hover:underline">Request access</button></> : <button type="button" onClick={() => { setMode('signin'); setEmailConfirmed(false) }} className="font-semibold text-primary underline-offset-4 hover:text-accent hover:underline">Back to sign in</button>}</div>}{authNotice && <p className="mt-4 rounded-xl bg-secondary p-3 text-center text-xs leading-5 text-primary" role="status">{authNotice}</p>}<p className="mt-5 text-center text-[10px] leading-4 text-muted-foreground">By continuing, you agree to our <Link to="/terms" className="font-semibold text-primary underline">Terms of Service</Link> and <Link to="/privacy" className="font-semibold text-primary underline">Privacy Policy</Link></p></section></div></main>

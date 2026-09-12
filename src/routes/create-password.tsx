@@ -72,8 +72,8 @@ function CreatePassword() {
       } else if (search.recovery === 'forgot' && search.email) {
         await completePasswordReset(search.email, token)
       }
-      toast.success('Password updated', { description: temporaryRecovery ? 'Your portal has been unlocked.' : undefined })
-      await navigate({ to: '/app' })
+      toast.success('Password updated', { description: temporaryRecovery ? 'Your account has been updated.' : undefined })
+      await navigate({ to: '/' })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'We couldn’t update your password. Please use the latest email link and try again.')
     } finally { setBusy(false) }
