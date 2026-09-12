@@ -17,14 +17,10 @@ export function AdminOpsAssistant({ range, overview, onOpenTesting, onOpenTutori
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState('')
   const [loading, setLoading] = useState(false)
-  const lastSubmittedPrompt = useState({ value: '', at: 0 })[0]
 
   const ask = async (value = question) => {
     const prompt = value.trim()
     if (!prompt || loading) return
-    const now = Date.now()
-    if (lastSubmittedPrompt.value === prompt && now - lastSubmittedPrompt.at < 1500) return
-    lastSubmittedPrompt.value = prompt
     setLoading(true)
     try {
       setAnswer(await askAdminAssistant(prompt, range))

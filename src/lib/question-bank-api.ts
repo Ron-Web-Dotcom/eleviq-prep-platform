@@ -47,7 +47,7 @@ async function adminRequest<T>(path: string, init: RequestInit = {}): Promise<T>
     if (!response.ok) throw new Error(body.error || `Question bank request failed (${response.status})`)
     return body
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('The question bank request timed out. Please try again.')
+    if (error instanceof DOMException && error.name === 'AbortError') throw Object.assign(new Error('The question bank request timed out. Please try again.'), { cause: error })
     throw error
   } finally {
     window.clearTimeout(timeout)

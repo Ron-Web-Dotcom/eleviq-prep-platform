@@ -147,7 +147,7 @@ export async function checkAdminAccess(userId?: string): Promise<{ authorized: b
       }
       throw new Error(body.error || `Admin access check failed (${response.status})`)
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === 'AbortError') throw new Error('Admin access verification timed out. Please try again.')
+      if (cause instanceof DOMException && cause.name === 'AbortError') throw Object.assign(new Error('Admin access verification timed out. Please try again.'), { cause })
       throw cause
     } finally {
       window.clearTimeout(timeout)

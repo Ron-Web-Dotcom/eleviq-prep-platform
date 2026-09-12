@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { BookOpenCheck, Check, CheckCircle2, FilePenLine, LoaderCircle, Plus, Save, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -48,8 +48,12 @@ export function QuestionBankWorkspace({ open, onClose, onSaved }: { open: boolea
   const [tab, setTab] = useState<'edit' | 'review'>('edit')
   const [programId] = useState('program_lpn')
 
-  const loadQuestions = async (searchQuery = query) => { setLoading(true); try { setQuestions(await fetchQuestions(searchQuery)) } catch (error) { toast.error('Question bank could not load', { description: error instanceof Error ? error.message : 'Please try again.' }) } finally { setLoading(false) } }
-  useEffect(() => { if (open) void loadQuestions('') }, [open])
+  const loadQuestions = useCallback(async (searchQuery = query) => { setLoading(true); try { setQuestions(await fetchQuestions(searchQuery)) } catch (error) { toast.error('Question bank could not load', { description: error instanceof Error ? error.message : 'Please try again.' }) } finally { setLoading(false) } }, [query])
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setTimeout(() => void loadQuestions(''), 0)
+    return () => window.clearTimeout(timer)
+  }, [open, loadQuestions])
   const update = (patch: Partial<QuestionDraft>) => setDraft(current => ({ ...current, ...patch }))
   const selectQuestion = (question: QuestionBankQuestion) => { setSelectedId(question.id); setDraft({ ...question }); setTab('edit') }
   const startNew = () => { setSelectedId(''); setDraft(blankQuestion()); setTab('edit') }

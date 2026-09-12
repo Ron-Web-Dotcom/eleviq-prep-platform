@@ -21,7 +21,8 @@ const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  "frame-ancestors 'self'",
+  // `frame-ancestors` is intentionally omitted: meta-delivered CSP cannot enforce it.
+  // Blink hosting does not currently expose configurable response headers for static sites.
   "script-src 'self'",
   "style-src 'self' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
@@ -36,7 +37,7 @@ const developmentContentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  "frame-ancestors 'self'",
+  // `frame-ancestors` is omitted because meta-delivered CSP cannot enforce it.
   "script-src 'self' 'unsafe-inline' https://blink.new",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
