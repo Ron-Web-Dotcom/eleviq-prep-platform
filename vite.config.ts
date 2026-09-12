@@ -230,8 +230,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
     },
-    // @blinkdotnew/ui + framer-motion + R3F peers must share one React instance or hooks
-    // crash inside motion with: Cannot read properties of null (reading 'useRef')
+    // Keep one React instance in the client bundle so hooks remain stable.
     dedupe: ['react', 'react-dom'],
   },
   optimizeDeps: {
@@ -259,7 +258,6 @@ export default defineConfig({
       'react-dom',
       'react-dom/client',
       'react/jsx-runtime',
-      'framer-motion',
       '@tanstack/react-router',
       '@tanstack/react-query',
     ],
@@ -269,8 +267,16 @@ export default defineConfig({
     strictPort: true,
     host: true,
     allowedHosts: true,
+    fs: {
+      strict: true,
+      deny: ['.env', '.env.*', '.git/**', 'node_modules/**', '.vite-out/**', 'dist/**'],
+    },
   },
   build: {
+    // Production builds intentionally omit source maps. Source maps are debugging
+    // aids, not a security control, and this static site has no protected source
+    // delivery path for them.
+    sourcemap: false,
     // Build into a clean temp dir; scripts/finalize-static-build.mjs then flattens
     // .vite-out/client/* -> dist/ so Blink hosting serves dist/index.html
     // (BUILD_PATHS['vite-react'] = 'dist'). Building here instead of dist/ dodges the

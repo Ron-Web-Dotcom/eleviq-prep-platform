@@ -4,7 +4,33 @@ import { sign, verify } from 'hono/jwt'
 import { createClient } from '@blinkdotnew/sdk'
 
 const app = new Hono()
-app.use('*', cors())
+
+const defaultAllowedOrigin = (env: Record<string, string>) => `https://${env.BLINK_PROJECT_ID}.blinkusercontent.com`
+const isAllowedRequestOrigin = (origin: string, env: Record<string, string>) => {
+  if (!origin) return false
+  if (origin === defaultAllowedOrigin(env) || origin === 'https://eleviqprep.com' || origin === 'https://www.eleviqprep.com') return true
+  try {
+    const url = new URL(origin)
+    return url.protocol === 'https:' && url.hostname.endsWith('.preview-blink.com')
+  } catch {
+    return false
+  }
+}
+
+app.use('*', cors({
+  origin: (origin, c) => isAllowedRequestOrigin(origin, c.env as Record<string, string>) ? origin : '',
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 600,
+}))
+app.use('*', async (c, next) => {
+  await next()
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), usb=(), payment=(), notifications=(), clipboard-read=(), clipboard-write=()')
+  c.header('Cross-Origin-Resource-Policy', 'same-site')
+  c.header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+})
 
 const getBlink = (env: Record<string, string>) => createClient({
   projectId: env.BLINK_PROJECT_ID,

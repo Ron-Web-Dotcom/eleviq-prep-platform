@@ -10,12 +10,11 @@
  * BUILD_PATHS['vite-react'] = 'dist'). So we copy `.vite-out/client/*` up into a
  * flat `dist/` and drop the server.
  *
- * Why build into `.vite-out` instead of `dist/` directly: sandboxes created before the
- * platform stopped injecting `_redirects` still carry a read-only copy owned by another
- * user, and Start's client build tries to EMPTY its out dir first → `EACCES: unlink
- * _redirects`. Building into a clean temp dir avoids that entirely; here we only COPY
- * into `dist/` (never delete), so a legacy read-only `_redirects` is tolerated. Nothing
- * injects that file any more and nothing executes it — see skills/blink-hosting.
+ * Why build into `.vite-out` instead of `dist/` directly: Start's client build can
+ * otherwise collide with stale publish artifacts. Building into a clean temp dir keeps
+ * the production output deterministic; this script then replaces `dist/` contents with
+ * only the current client artifacts. See skills/blink-hosting for the static hosting
+ * model.
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -30,22 +29,19 @@ if (!existsSync(SRC)) {
 
 mkdirSync(DEST, { recursive: true })
 
+// Never leave assets from an older build in the publish directory. Stale hashed
+// bundles can expose removed implementation details and make the deployed site
+// load code that is no longer present in the current source tree.
+for (const entry of readdirSync(DEST)) {
+  rmSync(join(DEST, entry), { recursive: true, force: true })
+}
+
 for (const entry of readdirSync(SRC)) {
   try {
     cpSync(join(SRC, entry), join(DEST, entry), { recursive: true, force: true })
   } catch (e) {
-    // ONLY `_redirects` may be skipped, and only because sandboxes created before the platform
-    // stopped injecting it still carry a read-only copy owned by another user that cannot be
-    // overwritten. The file is inert either way — nothing executes it. ANY other failed entry
-    // (assets/, index.html, route html) would leave dist/index.html pointing at missing or stale
-    // hashed assets — a silently broken deployment. Fail the build instead.
-    // Remove this branch once no live sandbox predates the injector's removal.
-    if (entry === '_redirects') {
-      console.warn(`[finalize] skip ${entry}: ${e.code || e.message} (legacy read-only copy; the file is not executed)`)
-    } else {
-      console.error(`[finalize] FAILED copying ${entry} into dist/: ${e.code || e.message} — aborting (a partial dist/ deploys broken)`)
-      process.exit(1)
-    }
+    console.error(`[finalize] FAILED copying ${entry} into dist/: ${e.code || e.message} — aborting (a partial dist/ deploys broken)`)
+    process.exit(1)
   }
 }
 
