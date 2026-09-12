@@ -60,7 +60,6 @@ const googleScopes = [
   'https://www.googleapis.com/auth/meetings.space.created',
 ].join(' ')
 const googleCallbackPath = '/oauth/google/callback'
-const defaultAllowedOrigin = (env: Record<string, string>) => `https://${env.BLINK_PROJECT_ID}.blinkusercontent.com`
 const isAllowedGoogleOrigin = (origin: string, env: Record<string, string>) => {
   if (!origin) return false
   if (origin === defaultAllowedOrigin(env)) return true

@@ -132,9 +132,7 @@ export async function createGoogleCalendarEvent(input: {
   createMeet?: boolean
 }) {
   const status = await getGoogleIntegrationStatus()
-  if (status.connected) {
-    const result = await unifiedGoogleFetch('api/google/calendar/events', input)
-    return { connected: true, event: result.event as CalendarEvent, meetingUri: result.meetingUri as string | undefined }
-  }
-  return { connected: false, event: null, meetingUri: undefined }
+  if (!status.connected) return { connected: false, event: null, meetingUri: undefined }
+  const result = await unifiedGoogleFetch('api/google/calendar/events', input)
+  return { connected: true, event: result.event as CalendarEvent, meetingUri: result.meetingUri as string | undefined }
 }
